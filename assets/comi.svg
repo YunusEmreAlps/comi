@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 450" width="320" role="img" aria-label="comi: a Go gopher dressed as a komi, carrying commits on a tray">
+  <title>comi</title>
+  <g stroke="#1f2328" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+    <!-- ears -->
+    <circle cx="132" cy="112" r="18" fill="#74CEDD"/>
+    <circle cx="250" cy="112" r="18" fill="#74CEDD"/>
+
+    <!-- raised arm holding the tray -->
+    <ellipse cx="292" cy="162" rx="14" ry="50" fill="#F6D2A2" transform="rotate(28 292 162)"/>
+
+    <!-- body -->
+    <path d="M110 205 C110 125 150 92 191 92 C232 92 272 125 272 205 L274 362 C274 402 242 418 191 418 C140 418 108 402 108 362 Z" fill="#74CEDD"/>
+
+    <!-- apron -->
+    <path d="M144 278 L188 248 M238 278 L194 248" fill="none" stroke-width="3"/>
+    <path d="M138 278 L244 278 L252 396 Q191 410 130 396 Z" fill="#ffffff"/>
+    <path d="M138 300 L114 306 M244 300 L268 306" fill="none" stroke-width="3"/>
+    <rect x="168" y="320" width="46" height="30" rx="4" fill="#ffffff" stroke-width="3"/>
+    <rect x="200" y="306" width="7" height="22" rx="2" fill="#F05133" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <circle cx="155" cy="165" r="32" fill="#ffffff"/>
+    <circle cx="228" cy="165" r="32" fill="#ffffff"/>
+    <circle cx="163" cy="171" r="11" fill="#1f2328" stroke="none"/>
+    <circle cx="236" cy="171" r="11" fill="#1f2328" stroke="none"/>
+    <circle cx="167" cy="166" r="3.5" fill="#ffffff" stroke="none"/>
+    <circle cx="240" cy="166" r="3.5" fill="#ffffff" stroke="none"/>
+
+    <!-- snout, nose, teeth -->
+    <ellipse cx="191" cy="212" rx="26" ry="17" fill="#F6D2A2"/>
+    <ellipse cx="191" cy="202" rx="11" ry="7" fill="#3a2a20" stroke="none"/>
+    <rect x="182" y="226" width="9" height="13" rx="2" fill="#ffffff" stroke-width="3"/>
+    <rect x="191" y="226" width="9" height="13" rx="2" fill="#ffffff" stroke-width="3"/>
+
+    <!-- bow tie -->
+    <path d="M191 256 L168 245 L168 267 Z M191 256 L214 245 L214 267 Z" fill="#1f2328" stroke-width="2"/>
+    <circle cx="191" cy="256" r="5" fill="#1f2328" stroke="none"/>
+
+    <!-- arm with towel -->
+    <ellipse cx="112" cy="290" rx="14" ry="26" fill="#F6D2A2" transform="rotate(12 112 290)"/>
+    <rect x="94" y="296" width="32" height="58" rx="3" fill="#ffffff" stroke-width="3"/>
+    <path d="M94 340 L126 340 M94 347 L126 347" fill="none" stroke="#74CEDD" stroke-width="3"/>
+
+    <!-- feet -->
+    <ellipse cx="156" cy="418" rx="26" ry="12" fill="#F6D2A2"/>
+    <ellipse cx="226" cy="418" rx="26" ry="12" fill="#F6D2A2"/>
+
+    <!-- paw under the tray -->
+    <circle cx="316" cy="112" r="13" fill="#F6D2A2"/>
+
+    <!-- tray -->
+    <ellipse cx="318" cy="96" rx="66" ry="11" fill="#D0D7DE"/>
+
+    <!-- commits served on the tray -->
+    <path d="M284 72 L318 62 L352 72" fill="none" stroke-width="5"/>
+    <circle cx="284" cy="72" r="12" fill="#F05133"/>
+    <circle cx="318" cy="62" r="12" fill="#F05133"/>
+    <circle cx="352" cy="72" r="12" fill="#F05133"/>
+
+    <!-- fresh out of the kitchen -->
+    <path d="M280 48 q-6 -8 0 -16 q6 -8 0 -16 M318 38 q-6 -8 0 -16 q6 -8 0 -16 M356 48 q-6 -8 0 -16 q6 -8 0 -16" fill="none" stroke="#8c959f" stroke-width="3"/>
+  </g>
+</svg>

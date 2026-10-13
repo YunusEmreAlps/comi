@@ -1,0 +1,8 @@
+# build output
+/comi
+/comi.exe
+/dist/
+
+# test and coverage output
+*.test
+*.out
