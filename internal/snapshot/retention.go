@@ -148,20 +148,23 @@ func (p Policy) due(snaps []Snapshot, kept []bool, now time.Time) bool {
 // Disk space is freed once git's garbage collection drops the unreferenced
 // objects.
 func Prune(ctx context.Context, repo, branch string, policy Policy, now time.Time, dryRun bool) ([]Snapshot, error) {
-	return prune(ctx, repo, branch, policy, now, false, dryRun)
+	removed, _, err := prune(ctx, repo, branch, git.Resolve(ctx, repo, Ref(branch)), policy, now, false, dryRun)
+	return removed, err
 }
 
-func prune(ctx context.Context, repo, branch string, policy Policy, now time.Time, onlyIfDue, dryRun bool) ([]Snapshot, error) {
+// prune is Prune for the chain that ends at tip. It also returns the
+// chain's new tip.
+func prune(ctx context.Context, repo, branch, tip string, policy Policy, now time.Time, onlyIfDue, dryRun bool) ([]Snapshot, string, error) {
 	if policy.Forever() {
-		return nil, nil
+		return nil, tip, nil
 	}
-	snaps, err := List(ctx, repo, branch, 1<<30)
+	snaps, err := list(ctx, repo, branch, tip, 1<<30)
 	if err != nil || len(snaps) == 0 {
-		return nil, err
+		return nil, tip, err
 	}
 	kept := policy.keep(snaps, now)
 	if onlyIfDue && !policy.due(snaps, kept, now) {
-		return nil, nil
+		return nil, tip, nil
 	}
 
 	var removed []Snapshot
@@ -171,13 +174,36 @@ func prune(ctx context.Context, repo, branch string, policy Policy, now time.Tim
 		}
 	}
 	if len(removed) == 0 || dryRun {
-		return removed, nil
+		return removed, tip, nil
 	}
 
-	// Rebuild the chain from the oldest kept snapshot up. Until the first
-	// removed one, nothing changes, so those commits are reused as they are.
-	var prev string
-	rewriting := false
+	newTip, err := rewrite(ctx, repo, branch, snaps, kept)
+	if err != nil {
+		return nil, tip, err
+	}
+	// Fails, rather than losing it, if a snapshot was taken meanwhile.
+	input := fmt.Sprintf("update %s %s %s\ndelete %s\n", Ref(branch), newTip, tip, rewritePrefix+branch)
+	if _, err := git.RunInput(ctx, repo, nil, input, "update-ref", "-m", "comi prune", "--stdin"); err != nil {
+		return nil, tip, fmt.Errorf("update-ref: %w", err)
+	}
+	return removed, newTip, nil
+}
+
+// rewritePrefix holds a chain while rewrite writes it.
+const rewritePrefix = "refs/comi-prune/"
+
+// rewrite writes the kept snapshots again, oldest first, each on top of the
+// one kept before it, and returns the new newest one. Kept snapshots older
+// than the oldest removed one don't change and are reused as they are.
+//
+// It feeds all of them to a single git fast-import, which writes the same
+// commits as commit-tree: one commit-tree per snapshot made pruning a long
+// chain take minutes.
+func rewrite(ctx context.Context, repo, branch string, snaps []Snapshot, kept []bool) (string, error) {
+	ref := rewritePrefix + branch
+	var b strings.Builder
+	fmt.Fprintf(&b, "reset %s\n", ref)
+	prev, mark, rewriting := "", 0, false
 	for i := len(snaps) - 1; i >= 0; i-- {
 		s := snaps[i]
 		if !kept[i] {
@@ -188,18 +214,26 @@ func prune(ctx context.Context, repo, branch string, policy Policy, now time.Tim
 			prev = s.ID
 			continue
 		}
-		id, err := commitTree(ctx, repo, s.tree, []string{prev, base(snaps, i)}, branch, s.Files, s.Time)
-		if err != nil {
-			return nil, err
+		mark++
+		msg := message(s.Files, branch) + "\n"
+		who := fmt.Sprintf("%s %d +0000", identity, s.Time.Unix())
+		fmt.Fprintf(&b, "commit %s\nmark :%d\nauthor %s\ncommitter %s\ndata %d\n%s", ref, mark, who, who, len(msg), msg)
+		for j, p := range nonEmpty(prev, base(snaps, i)) {
+			fmt.Fprintf(&b, "%s %s\n", []string{"from", "merge"}[j], p)
 		}
-		prev = id
+		fmt.Fprintf(&b, "M 040000 %s \"\"\n\n", s.tree)
+		prev = fmt.Sprintf(":%d", mark)
 	}
+	fmt.Fprintf(&b, "get-mark :%d\ndone\n", mark)
 
-	// Fails, rather than losing it, if a snapshot was taken meanwhile.
-	if _, err := git.Run(ctx, repo, "update-ref", "-m", "comi prune", Ref(branch), prev, snaps[0].ID); err != nil {
-		return nil, fmt.Errorf("update-ref: %w", err)
+	id, err := git.RunInput(ctx, repo, nil, b.String(), "fast-import", "--quiet", "--done", "--force")
+	if err != nil {
+		return "", fmt.Errorf("fast-import: %w", err)
 	}
-	return removed, nil
+	if len(id) != 40 && len(id) != 64 {
+		return "", fmt.Errorf("fast-import: unexpected output %q", id)
+	}
+	return id, nil
 }
 
 // base returns the commit that was checked out when snapshot i was taken:

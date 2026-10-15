@@ -161,6 +161,15 @@ func TestPrune(t *testing.T) {
 	if found, err := Find(ctx, repo, "main", "90m", now); err != nil || !found.Time.Equal(before[1].Time) {
 		t.Errorf("Find by age after prune = %+v, %v", found, err)
 	}
+	// The rewritten snapshots are exactly what commit-tree would write.
+	for _, s := range after[:2] {
+		if id, err := commitTree(ctx, repo, s.tree, s.parents, "main", s.Files, s.Time); err != nil || id != s.ID {
+			t.Errorf("snapshot %s: commit-tree gives %s, %v", s.Short(), id, err)
+		}
+	}
+	if leftover := gittest.Git(t, repo, "for-each-ref", rewritePrefix); leftover != "" {
+		t.Errorf("rewrite left refs behind: %s", leftover)
+	}
 
 	if again, err := Prune(ctx, repo, "main", DefaultPolicy, now, false); err != nil || len(again) != 0 {
 		t.Errorf("second prune removed %d, %v; want 0", len(again), err)

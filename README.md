@@ -139,10 +139,10 @@ Set another policy per project with `-keep`, for example `comi add . -mode snaps
 <summary>How it works</summary>
 
 - Snapshots of branch `main` live under `refs/comi/main` (`refs/comi/detached` in detached HEAD). Refs outside `refs/heads` are not branches, so they don't show up in `git branch` or as branches on GitHub.
-- A snapshot is built on a copy of the index (`git add -A`, `write-tree`, `commit-tree`), so your real index is never modified. Files in `.gitignore` are left out.
+- A snapshot is built on comi's own index, `.git/comi-index`, which starts as a copy of yours, so your real index is never modified. It remembers what the last snapshot saw, so only files that changed since are read again. Files in `.gitignore` are left out, as `git add -A` would.
 - Each snapshot's first parent is the previous snapshot and its second parent is the commit you were on, so `git log --first-parent refs/comi/main` shows them all.
 - A new snapshot is only made when something changed since the last one and the files differ from your last commit.
-- Pruning rebuilds the chain from the oldest kept snapshot with the same trees, times and parents, then moves the ref only if no snapshot was taken meanwhile. Disk space is freed when git's garbage collection removes the unreferenced objects.
+- Pruning rebuilds the chain from the oldest kept snapshot with the same trees, times and parents, in one `git fast-import`, then moves the ref only if no snapshot was taken meanwhile. Disk space is freed when git's garbage collection removes the unreferenced objects.
 - With push enabled, the ref is pushed to `origin` as `refs/comi/<branch>`. `refs/comi-pushed/<branch>` remembers what was sent, so failed pushes are retried without contacting the remote.
 
 </details>

@@ -172,6 +172,9 @@ func TestTakeWorksMidMergeAndDetached(t *testing.T) {
 
 func TestTakeInRepoWithoutCommits(t *testing.T) {
 	repo := gittest.NewLocalRepo(t, filepath.Join(t.TempDir(), "fresh"))
+	if msg := take(t, repo, Options{}, t0); msg != "no changes" {
+		t.Errorf("empty repository: %q", msg)
+	}
 	gittest.WriteFile(t, repo, "a.txt", "a")
 	if msg := take(t, repo, Options{}, t0); !strings.Contains(msg, "(1 file changed)") {
 		t.Errorf("message = %q", msg)
@@ -259,5 +262,86 @@ func TestRestore(t *testing.T) {
 	}
 	if staged := gittest.Git(t, repo, "diff", "--cached", "--name-only"); staged != "" {
 		t.Errorf("restore changed the index: %q", staged)
+	}
+}
+
+func TestTakeKeepsItsIndex(t *testing.T) {
+	repo, _ := gittest.NewRepo(t)
+	gitDir, _ := git.Dir(ctx, repo)
+
+	// Same size and modification time, so only the content tells these apart
+	// from what comi's index remembers. git rechecks the content because the
+	// last snapshot was taken in the same second the file was written.
+	mtime := time.Now().Add(-time.Minute).Truncate(time.Second)
+	for i, content := range []string{"aaaa", "bbbb", "cccc"} {
+		gittest.WriteFile(t, repo, "a.txt", content)
+		os.Chtimes(filepath.Join(repo, "a.txt"), mtime, mtime)
+		if i > 0 {
+			os.Chtimes(filepath.Join(gitDir, indexName), mtime, mtime)
+		}
+		if msg := take(t, repo, Options{}, t0.Add(time.Duration(i)*time.Minute)); !strings.HasPrefix(msg, "snapshot ") {
+			t.Fatalf("change %d: %q", i, msg)
+		}
+		if got := gittest.Git(t, repo, "show", Ref("main")+":a.txt"); got != content {
+			t.Errorf("change %d: snapshot has %q, want %q", i, got, content)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(gitDir, indexName)); err != nil {
+		t.Errorf("comi's index was not kept: %v", err)
+	}
+	entries, _ := os.ReadDir(gitDir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), indexName+"-") {
+			t.Errorf("temporary index %s left behind", e.Name())
+		}
+	}
+}
+
+func TestTakeSeesDeletesAndNewFolders(t *testing.T) {
+	repo, _ := gittest.NewRepo(t)
+	gittest.WriteFile(t, repo, "a.txt", "a")
+	take(t, repo, Options{}, t0)
+
+	os.Remove(filepath.Join(repo, "a.txt"))
+	os.Remove(filepath.Join(repo, "README.md"))
+	gittest.WriteFile(t, repo, "new/deep/b.txt", "b")
+	take(t, repo, Options{}, t0.Add(time.Minute))
+	if files := gittest.Git(t, repo, "ls-tree", "-r", "--name-only", Ref("main")); files != "new/deep/b.txt" {
+		t.Errorf("snapshot has %q, want only new/deep/b.txt", files)
+	}
+}
+
+func TestTakeFollowsIgnoreChanges(t *testing.T) {
+	repo, _ := gittest.NewRepo(t)
+	saved := func(file string) bool {
+		_, err := git.Run(ctx, repo, "cat-file", "-e", Ref("main")+":"+file)
+		return err == nil
+	}
+
+	gittest.WriteFile(t, repo, "secret.env", "v1")
+	take(t, repo, Options{}, t0)
+	if !saved("secret.env") {
+		t.Fatal("untracked file was not saved")
+	}
+
+	// Ignored after it was saved: left out from now on.
+	gittest.WriteFile(t, repo, ".gitignore", "*.env\n*.log\n")
+	gittest.WriteFile(t, repo, "secret.env", "v2")
+	take(t, repo, Options{}, t0.Add(time.Minute))
+	if saved("secret.env") {
+		t.Error("a file ignored since the last snapshot is still saved")
+	}
+
+	// Ignored, but tracked anyway: saved, as `git add -A` would.
+	gittest.WriteFile(t, repo, "keep.log", "log")
+	gittest.Git(t, repo, "add", "-f", "keep.log")
+	gittest.WriteFile(t, repo, "b.txt", "b")
+	take(t, repo, Options{}, t0.Add(2*time.Minute))
+	if !saved("keep.log") || !saved("b.txt") {
+		t.Error("an ignored file tracked with git add -f was left out")
+	}
+	if saved("secret.env") {
+		t.Error("secret.env came back")
 	}
 }
