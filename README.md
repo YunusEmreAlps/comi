@@ -20,10 +20,10 @@
 
 ```text
 $ comi list
-NAME   MODE      SCHEDULE     NEXT RUN              BRANCH  PUSH  MESSAGE              PATH
-app    snapshot  5m           Tue 2026-10-13 21:25  (any)   yes   -                    /home/you/code/app
-blog   commit    30m          Tue 2026-10-13 21:44  (any)   yes   auto: {date} {time}  /home/you/code/blog
-notes  commit    09:00,18:00  Wed 2026-10-14 09:00  main    no    daily: {date}        /home/you/code/notes
+NAME   MODE      SCHEDULE     NEXT RUN              BRANCH  PUSH  KEEP       MESSAGE              PATH
+app    snapshot  5m           Tue 2026-10-13 21:25  (any)   yes   1d,7d,30d  -                    /home/you/code/app
+blog   commit    30m          Tue 2026-10-13 21:44  (any)   yes   -          auto: {date} {time}  /home/you/code/blog
+notes  commit    09:00,18:00  Wed 2026-10-14 09:00  main    no    -          daily: {date}        /home/you/code/notes
 ```
 
 ## Features
@@ -35,6 +35,7 @@ notes  commit    09:00,18:00  Wed 2026-10-14 09:00  main    no    daily: {date} 
 - **A schedule per project**: every `30m`, every `2h`, or at `20:00` / `09:00,18:00` each day.
 - **One background process** for all your repositories. Add or remove projects while it runs; no restart needed.
 - **Off-machine backup.** Snapshots are pushed to `origin` as hidden refs, not branches, so a dead laptop doesn't take your work with it.
+- **Snapshots don't pile up.** Old ones are thinned out automatically: everything from the last day, hourly for a week, daily for a month.
 - **Push is never lost.** If a push fails (offline, auth), the commit or snapshot stays local and is pushed on the next run.
 - **Safe by default.** Commits are skipped during a rebase, merge, cherry-pick or revert, or in detached HEAD. comi never switches branches.
 - **Branch lock (optional).** `-b main` runs only while `main` is checked out.
@@ -87,11 +88,26 @@ saved your current files as snapshot 994ffbda (undo with: comi restore 994ffbda)
 restored all files from snapshot 2bb2416c (Tue 2026-10-13 21:22)
 ```
 
-- **Pick a snapshot** by id (`2bb2416c`), by age (`30m`, `2h`: the newest snapshot at least that old) or with `latest`.
+- **Pick a snapshot** by id (`2bb2416c`), by age (`30m`, `2h`, `3d`: the newest snapshot at least that old) or with `latest`.
 - **Restore single files** with `comi restore 2h src/main.go`, or everything with `comi restore 2h`.
 - **Restoring is undoable.** Your current files are snapshotted before anything is overwritten. Restore only writes files; the staging area and HEAD stay as they are.
 - **Works in any git repository.** `comi snapshot`, `history`, `diff` and `restore` don't need the project to be added; scheduled snapshots do.
 - **Works in any state**: detached HEAD, mid-rebase, in a conflicted merge. That's often exactly when you need it.
+
+### Keeping old snapshots
+
+Every few minutes adds up, so old snapshots are thinned out. The default policy, `24h,7d,30d`, keeps:
+
+| Age | Kept |
+| --- | --- |
+| up to 24 hours | every snapshot |
+| up to 7 days | the newest of each hour |
+| up to 30 days | the newest of each day |
+| older | nothing (the newest snapshot is always kept) |
+
+Set another policy per project with `-keep`, for example `comi add . -mode snapshot -keep 2h,3d,14d`, or keep everything with `-keep forever`. `comi prune` cleans up right away; `comi prune -n` only shows what would go.
+
+Old snapshots are removed during scheduled runs about once a day. Snapshots are linked to each other, so removing some gives the newer ones new ids (their files and times stay the same). For older snapshots, pick them by age (`2h`, `3d`) or `latest` rather than by id.
 
 <details>
 <summary>How it works</summary>
@@ -100,6 +116,7 @@ restored all files from snapshot 2bb2416c (Tue 2026-10-13 21:22)
 - A snapshot is built on a copy of the index (`git add -A`, `write-tree`, `commit-tree`), so your real index is never modified. Files in `.gitignore` are left out.
 - Each snapshot's first parent is the previous snapshot and its second parent is the commit you were on, so `git log --first-parent refs/comi/main` shows them all.
 - A new snapshot is only made when something changed since the last one and the files differ from your last commit.
+- Pruning rebuilds the chain from the oldest kept snapshot with the same trees, times and parents, then moves the ref only if no snapshot was taken meanwhile. Disk space is freed when git's garbage collection removes the unreferenced objects.
 - With push enabled, the ref is pushed to `origin` as `refs/comi/<branch>`. `refs/comi-pushed/<branch>` remembers what was sent, so failed pushes are retried without contacting the remote.
 
 </details>
@@ -117,6 +134,7 @@ restored all files from snapshot 2bb2416c (Tue 2026-10-13 21:22)
 | `comi history [-p project] [-b branch] [-n 20]` | List snapshots of the current (or given) branch. |
 | `comi diff <snapshot> [-p project] [-stat]` | Show what changed between a snapshot and your files now. |
 | `comi restore <snapshot> [-p project] [file ...]` | Put files back from a snapshot (all files if none given). |
+| `comi prune [-p project] [-keep policy] [-n]` | Remove old snapshots now, on every branch. `-n` only lists them. |
 | `comi version` | Show the installed version. |
 | `comi help` | Show usage. |
 
@@ -129,6 +147,7 @@ restored all files from snapshot 2bb2416c (Tue 2026-10-13 21:22)
 | `-m <message>` | `auto: {date} {time}` | Commit message template (commit mode). |
 | `-b <branch>` | *(any branch)* | Only run while this branch is checked out. `-b ""` removes the lock. |
 | `-n <name>` | folder name | Name used in `list`, `now`, `remove` and `-p`. |
+| `-keep <policy>` | `24h,7d,30d` | Which old snapshots to keep (snapshot mode), see [Keeping old snapshots](#keeping-old-snapshots). |
 | `-no-push` | off | Keep commits or snapshots local. |
 
 Flags can go before or after the path. Running `comi add` again on the same project updates it and keeps every setting you don't pass:

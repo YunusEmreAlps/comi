@@ -35,6 +35,7 @@ const (
 type Options struct {
 	Branch string // only snapshot while this branch is checked out; "" means any
 	Push   bool   // push snapshots to origin
+	Keep   Policy // which old snapshots to keep; the zero Policy keeps all
 }
 
 type Snapshot struct {
@@ -42,6 +43,9 @@ type Snapshot struct {
 	Time   time.Time
 	Branch string
 	Files  int // files that differ from the commit checked out at the time
+
+	tree    string
+	parents []string
 }
 
 func (s Snapshot) Short() string { return s.ID[:min(len(s.ID), 8)] }
@@ -57,8 +61,10 @@ func CurrentBranch(ctx context.Context, repo string) string {
 	return detached
 }
 
-// Take saves a snapshot of repo if anything changed since the last one, and
-// pushes snapshots that haven't reached origin yet when opts.Push is set.
+// Take saves a snapshot of repo if anything changed since the last one,
+// removes old snapshots that opts.Keep no longer keeps (at most about once a
+// day), and pushes snapshots that haven't reached origin yet when opts.Push
+// is set.
 func Take(ctx context.Context, repo string, opts Options, now time.Time) (string, error) {
 	branch := CurrentBranch(ctx, repo)
 	if opts.Branch != "" && branch != opts.Branch {
@@ -69,15 +75,25 @@ func Take(ctx context.Context, repo string, opts Options, now time.Time) (string
 	if err != nil {
 		return "", err
 	}
+	removed, err := prune(ctx, repo, branch, opts.Keep, now, true, false)
+	if err != nil {
+		return "", fmt.Errorf("removing old snapshots: %w", err)
+	}
+
 	msg := "no changes"
 	if snap != nil {
+		// Pruning rewrites the chain, so the new snapshot may have a new id.
+		snap.ID = git.Resolve(ctx, repo, Ref(branch))
 		msg = fmt.Sprintf("snapshot %s (%d %s changed)", snap.Short(), snap.Files, plural(snap.Files, "file", "files"))
+	}
+	if len(removed) > 0 {
+		msg += fmt.Sprintf(", removed %d old %s", len(removed), plural(len(removed), "snapshot", "snapshots"))
 	}
 	if !opts.Push {
 		return msg, nil
 	}
 
-	pushed, err := push(ctx, repo, branch)
+	pushed, err := Push(ctx, repo, branch)
 	switch {
 	case err != nil && snap != nil:
 		return "", fmt.Errorf("%s saved, but push failed (will retry next run): %w", msg, err)
@@ -123,19 +139,9 @@ func save(ctx context.Context, repo, branch string, now time.Time) (*Snapshot, e
 		files = len(strings.Split(changed, "\n"))
 	}
 
-	args := []string{"commit-tree", tree, "-m", fmt.Sprintf("%s: %d files changed\n\nbranch: %s", subjectPrefix, files, branch)}
-	for _, parent := range []string{prev, head} {
-		if parent != "" {
-			args = append(args, "-p", parent)
-		}
-	}
-	date := now.Format(time.RFC3339)
-	id, err := git.RunEnv(ctx, repo, []string{
-		"GIT_AUTHOR_NAME=comi", "GIT_AUTHOR_EMAIL=comi@localhost", "GIT_AUTHOR_DATE=" + date,
-		"GIT_COMMITTER_NAME=comi", "GIT_COMMITTER_EMAIL=comi@localhost", "GIT_COMMITTER_DATE=" + date,
-	}, args...)
+	id, err := commitTree(ctx, repo, tree, []string{prev, head}, branch, files, now)
 	if err != nil {
-		return nil, fmt.Errorf("commit-tree: %w", err)
+		return nil, err
 	}
 	// Passing the old value makes the update fail instead of losing a
 	// snapshot written concurrently.
@@ -143,6 +149,26 @@ func save(ctx context.Context, repo, branch string, now time.Time) (*Snapshot, e
 		return nil, fmt.Errorf("update-ref: %w", err)
 	}
 	return &Snapshot{ID: id, Time: now, Branch: branch, Files: files}, nil
+}
+
+// commitTree writes a snapshot commit. Empty parents are skipped. The same
+// inputs always produce the same commit id.
+func commitTree(ctx context.Context, repo, tree string, parents []string, branch string, files int, at time.Time) (string, error) {
+	args := []string{"commit-tree", tree, "-m", fmt.Sprintf("%s: %d files changed\n\nbranch: %s", subjectPrefix, files, branch)}
+	for _, p := range parents {
+		if p != "" {
+			args = append(args, "-p", p)
+		}
+	}
+	date := fmt.Sprintf("%d +0000", at.Unix())
+	id, err := git.RunEnv(ctx, repo, []string{
+		"GIT_AUTHOR_NAME=comi", "GIT_AUTHOR_EMAIL=comi@localhost", "GIT_AUTHOR_DATE=" + date,
+		"GIT_COMMITTER_NAME=comi", "GIT_COMMITTER_EMAIL=comi@localhost", "GIT_COMMITTER_DATE=" + date,
+	}, args...)
+	if err != nil {
+		return "", fmt.Errorf("commit-tree: %w", err)
+	}
+	return id, nil
 }
 
 // writeTree stores the working tree, as `git add -A` would see it, and
@@ -177,8 +203,10 @@ func writeTree(ctx context.Context, repo string) (string, error) {
 	return git.RunEnv(ctx, repo, env, "write-tree")
 }
 
-// push sends the branch's snapshots to origin unless they are already there.
-func push(ctx context.Context, repo, branch string) (bool, error) {
+// Push sends the branch's snapshots to origin unless they are already there.
+// It reports whether anything was pushed; without an origin remote it does
+// nothing.
+func Push(ctx context.Context, repo, branch string) (bool, error) {
 	ref, mark := Ref(branch), pushedPrefix+branch
 	cur := git.Resolve(ctx, repo, ref)
 	if cur == "" || cur == git.Resolve(ctx, repo, mark) {
@@ -203,24 +231,37 @@ func List(ctx context.Context, repo, branch string, limit int) ([]Snapshot, erro
 		return nil, nil
 	}
 	out, err := git.Run(ctx, repo, "log", "--first-parent", fmt.Sprintf("-n%d", limit),
-		"--format=%H%x09%ct%x09%s", ref)
+		"--format=%H%x09%T%x09%P%x09%ct%x09%s", ref)
 	if err != nil {
 		return nil, err
 	}
 
 	var snaps []Snapshot
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 || !strings.HasPrefix(parts[2], subjectPrefix) {
+		parts := strings.SplitN(line, "\t", 5)
+		if len(parts) != 5 || !strings.HasPrefix(parts[4], subjectPrefix) {
 			break // reached the commit the first snapshot was taken on
 		}
 		var unix int64
-		fmt.Sscan(parts[1], &unix)
-		s := Snapshot{ID: parts[0], Time: time.Unix(unix, 0), Branch: branch}
-		fmt.Sscanf(parts[2], subjectPrefix+": %d", &s.Files)
+		fmt.Sscan(parts[3], &unix)
+		s := Snapshot{ID: parts[0], Time: time.Unix(unix, 0), Branch: branch, tree: parts[1], parents: strings.Fields(parts[2])}
+		fmt.Sscanf(parts[4], subjectPrefix+": %d", &s.Files)
 		snaps = append(snaps, s)
 	}
 	return snaps, nil
+}
+
+// Branches returns the branches that have snapshots.
+func Branches(ctx context.Context, repo string) ([]string, error) {
+	out, err := git.Run(ctx, repo, "for-each-ref", "--format=%(refname)", RefPrefix)
+	if err != nil || out == "" {
+		return nil, err
+	}
+	var branches []string
+	for _, ref := range strings.Split(out, "\n") {
+		branches = append(branches, strings.TrimPrefix(ref, RefPrefix))
+	}
+	return branches, nil
 }
 
 // Find resolves a snapshot by id prefix ("3f2a91c0"), by age ("2h": the
@@ -237,7 +278,7 @@ func Find(ctx context.Context, repo, branch, query string, now time.Time) (Snaps
 		return snaps[0], nil
 	}
 
-	if age, err := time.ParseDuration(query); err == nil {
+	if age, err := parseAge(query); err == nil {
 		cutoff := now.Add(-age)
 		for _, s := range snaps {
 			if !s.Time.After(cutoff) {

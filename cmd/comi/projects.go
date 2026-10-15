@@ -38,6 +38,7 @@ func cmdAdd(args []string) error {
 	message := fs.String("m", "", "commit message template")
 	name := fs.String("n", "", "project name (default: folder name)")
 	branch := fs.String("b", "", "only run while this branch is checked out")
+	keep := fs.String("keep", "", `snapshot retention: "24h,7d,30d" (all, hourly, daily) or "forever"`)
 	noPush := fs.Bool("no-push", false, "keep everything local")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -104,6 +105,11 @@ func cmdAdd(args []string) error {
 	} else if interactive && !p.IsSnapshot() {
 		p.Message = prompt(in, "Commit message", messageOrDefault(p.Message))
 	}
+	if set["keep"] {
+		p.Keep = *keep
+	} else if interactive && p.IsSnapshot() {
+		p.Keep = prompt(in, `Keep snapshots: all, hourly, daily up to these ages (or "forever")`, keepOrDefault(p.Keep))
+	}
 	if set["b"] {
 		p.Branch = *branch
 	} else if interactive {
@@ -129,6 +135,14 @@ func cmdAdd(args []string) error {
 	}
 	if p.Message == autocommit.DefaultMessage {
 		p.Message = ""
+	}
+	policy, err := snapshot.ParsePolicy(p.Keep)
+	if err != nil {
+		return err
+	}
+	p.Keep = policy.String()
+	if policy == snapshot.DefaultPolicy {
+		p.Keep = ""
 	}
 	if p.Branch = strings.TrimSpace(p.Branch); p.Branch != "" {
 		if err := git.CheckBranchName(root, p.Branch); err != nil {
@@ -185,15 +199,15 @@ func cmdList([]string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tMODE\tSCHEDULE\tNEXT RUN\tBRANCH\tPUSH\tMESSAGE\tPATH")
+	fmt.Fprintln(w, "NAME\tMODE\tSCHEDULE\tNEXT RUN\tBRANCH\tPUSH\tKEEP\tMESSAGE\tPATH")
 	for _, p := range cfg.Projects {
 		next := "invalid schedule"
 		if sc, err := schedule.Parse(p.Schedule); err == nil {
 			next = formatTime(sc.Next(state.LastRun(p)))
 		}
-		msg := messageOrDefault(p.Message)
+		msg, keep := messageOrDefault(p.Message), "-"
 		if p.IsSnapshot() {
-			msg = "-"
+			msg, keep = "-", keepOrDefault(p.Keep)
 		}
 		branch := p.Branch
 		if branch == "" {
@@ -203,8 +217,8 @@ func cmdList([]string) error {
 		if p.NoPush {
 			push = "no"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			p.Name, modeOrDefault(p.Mode), p.Schedule, next, branch, push, msg, p.Path)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			p.Name, modeOrDefault(p.Mode), p.Schedule, next, branch, push, keep, msg, p.Path)
 	}
 	return w.Flush()
 }
@@ -361,7 +375,11 @@ func runAll(ctx context.Context, projects []config.Project, now time.Time) []res
 
 func runProject(ctx context.Context, p config.Project, now time.Time) (string, error) {
 	if p.IsSnapshot() {
-		return snapshot.Take(ctx, p.Path, snapshot.Options{Branch: p.Branch, Push: !p.NoPush}, now)
+		keep, err := snapshot.ParsePolicy(p.Keep)
+		if err != nil {
+			return "", err
+		}
+		return snapshot.Take(ctx, p.Path, snapshot.Options{Branch: p.Branch, Push: !p.NoPush, Keep: keep}, now)
 	}
 	return autocommit.Sync(ctx, p.Path, autocommit.Options{Message: p.Message, Branch: p.Branch, NoPush: p.NoPush}, now)
 }
@@ -371,6 +389,13 @@ func modeOrDefault(mode string) string {
 		return config.ModeCommit
 	}
 	return mode
+}
+
+func keepOrDefault(keep string) string {
+	if keep == "" {
+		return snapshot.DefaultPolicy.String()
+	}
+	return keep
 }
 
 func messageOrDefault(msg string) string {

@@ -132,6 +132,12 @@ func TestListAndFind(t *testing.T) {
 	if got, err := Find(ctx, repo, "main", "latest", now); err != nil || got.ID != snaps[0].ID {
 		t.Errorf("Find(latest) = %+v, %v", got, err)
 	}
+	if got, err := Find(ctx, repo, "main", "0d", now); err != nil || got.ID != snaps[0].ID {
+		t.Errorf("Find(0d) = %+v, %v", got, err)
+	}
+	if _, err := Find(ctx, repo, "main", "1d", now); err == nil {
+		t.Error("Find(1d): expected an error, no snapshot is that old")
+	}
 	if _, err := Find(ctx, repo, "main", "10h", now); err == nil {
 		t.Error("Find(10h): expected an error, no snapshot is that old")
 	}

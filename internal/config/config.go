@@ -26,6 +26,7 @@ type Project struct {
 	Schedule string    `json:"schedule"`
 	Message  string    `json:"message,omitempty"`
 	Branch   string    `json:"branch,omitempty"`
+	Keep     string    `json:"keep,omitempty"` // snapshot retention, see snapshot.ParsePolicy
 	NoPush   bool      `json:"no_push,omitempty"`
 	Added    time.Time `json:"added"`
 }

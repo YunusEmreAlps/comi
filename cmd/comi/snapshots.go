@@ -32,9 +32,12 @@ func cmdSnapshot(args []string) error {
 	if err != nil {
 		return err
 	}
-	var opts snapshot.Options
+	opts := snapshot.Options{Keep: snapshot.DefaultPolicy}
 	if p != nil && p.IsSnapshot() {
 		opts.Push = !p.NoPush
+		if opts.Keep, err = snapshot.ParsePolicy(p.Keep); err != nil {
+			return err
+		}
 	}
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "push" {
@@ -159,6 +162,80 @@ func cmdRestore(args []string) error {
 	}
 	fmt.Printf("restored %s from snapshot %s (%s)\n", what, snap.Short(), formatTime(snap.Time))
 	return nil
+}
+
+func cmdPrune(args []string) error {
+	fs := newFlagSet("prune")
+	project := fs.String("p", ".", "project name or path")
+	keep := fs.String("keep", "", "retention policy (default: the project's, or 24h,7d,30d)")
+	dryRun := fs.Bool("n", false, "only show what would be removed")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return errors.New("usage: comi prune [-p project] [-keep policy] [-n]")
+	}
+
+	ctx := context.Background()
+	repo, p, err := target(*project)
+	if err != nil {
+		return err
+	}
+	policySpec, push := *keep, false
+	if p != nil && p.IsSnapshot() {
+		push = !p.NoPush
+		if policySpec == "" {
+			policySpec = p.Keep
+		}
+	}
+	policy, err := snapshot.ParsePolicy(policySpec)
+	if err != nil {
+		return err
+	}
+	if policy.Forever() {
+		fmt.Println(`keep policy is "forever", nothing to remove`)
+		return nil
+	}
+
+	branches, err := snapshot.Branches(ctx, repo)
+	if err != nil {
+		return err
+	}
+	if len(branches) == 0 {
+		fmt.Println("no snapshots yet")
+		return nil
+	}
+	verb := "removed"
+	if *dryRun {
+		verb = "would remove"
+	}
+	now := time.Now()
+	for _, branch := range branches {
+		removed, err := snapshot.Prune(ctx, repo, branch, policy, now, *dryRun)
+		if err != nil {
+			return fmt.Errorf("%s: %w", branch, err)
+		}
+		fmt.Printf("%s: %s %d old %s (keep %s)\n", branch, verb, len(removed), plural(len(removed), "snapshot", "snapshots"), policy)
+		for _, s := range removed {
+			if *dryRun {
+				fmt.Printf("  %s  %s  %s\n", s.Short(), formatTime(s.Time), age(now.Sub(s.Time)))
+			}
+		}
+		if len(removed) > 0 && push && !*dryRun {
+			if _, err := snapshot.Push(ctx, repo, branch); err != nil {
+				fmt.Printf("%s: push failed, the scheduler will retry: %v\n", branch, err)
+			}
+		}
+	}
+	return nil
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // target resolves a project name or a path to a repository, and returns the

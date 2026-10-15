@@ -18,6 +18,7 @@ Projects:
       -s <schedule>              when to run (default: 1h, or 5m for snapshots)
       -m <message>               commit message template (commit mode)
       -b <branch>                only run while this branch is checked out; -b "" clears
+      -keep <policy>             snapshot retention (default: 24h,7d,30d, see below)
       -n <name>                  project name (default: folder name)
       -no-push                   keep everything local
   comi list                      projects and their next run
@@ -32,9 +33,16 @@ Snapshots (work in any git repository; -p defaults to the current directory):
   comi restore  <snapshot> [-p project] [file ...]
                                                 put files back from a snapshot;
                                                 the current state is snapshotted first
+  comi prune    [-p project] [-keep policy] [-n]
+                                                remove old snapshots now (-n: dry run)
 
-  <snapshot> is "latest", an id prefix (3f2a91c0) or an age (30m, 2h: the
+  <snapshot> is "latest", an id prefix (3f2a91c0) or an age (30m, 2h, 3d: the
   newest snapshot at least that old).
+
+  Retention: "24h,7d,30d" keeps every snapshot for 24h, the newest of each
+  hour up to 7d and of each day up to 30d; older ones are removed. "forever"
+  keeps all. Old snapshots are removed about once a day; this gives the kept
+  ones new ids, so prefer ages and "latest" over ids for older snapshots.
 
 Schedules: 30m, 2h, 1h30m (interval) or 20:00, 09:00,18:00 (daily times)
 Message placeholders: {date} {time} {files}   default: "` + autocommit.DefaultMessage + `"
@@ -61,6 +69,7 @@ func main() {
 		"history":  cmdHistory,
 		"diff":     cmdDiff,
 		"restore":  cmdRestore,
+		"prune":    cmdPrune,
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
