@@ -35,6 +35,8 @@ Snapshots (work in any git repository; -p defaults to the current directory):
                                                 the current state is snapshotted first
   comi prune    [-p project] [-keep policy] [-n]
                                                 remove old snapshots now (-n: dry run)
+  comi hook                                     snapshot before an AI agent's shell
+                                                command (a Claude Code PreToolUse hook)
 
   <snapshot> is "latest", an id prefix (3f2a91c0) or an age (30m, 2h, 3d: the
   newest snapshot at least that old).
@@ -70,6 +72,7 @@ func main() {
 		"diff":     cmdDiff,
 		"restore":  cmdRestore,
 		"prune":    cmdPrune,
+		"hook":     cmdHook,
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {

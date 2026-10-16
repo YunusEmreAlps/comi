@@ -213,6 +213,22 @@ func TestTakePrunesWhenDue(t *testing.T) {
 	}
 }
 
+func TestTakeLooksForOldSnapshotsHourly(t *testing.T) {
+	repo, _ := gittest.NewRepo(t)
+	gitDir, _ := git.Dir(ctx, repo)
+	now := time.Date(2026, 1, 31, 12, 0, 0, 0, time.Local)
+	takeAt(t, repo, "old-1", now.Add(-3*day-50*time.Minute))
+	takeAt(t, repo, "old-2", now.Add(-3*day-10*time.Minute))
+
+	markPruneCheck(gitDir, now.Add(-30*time.Minute))
+	if msg := take(t, repo, Options{Keep: DefaultPolicy}, now); strings.Contains(msg, "removed") {
+		t.Errorf("looked again within the hour: %q", msg)
+	}
+	if msg := take(t, repo, Options{Keep: DefaultPolicy}, now.Add(31*time.Minute)); !strings.Contains(msg, "removed 1 old snapshot") {
+		t.Errorf("an hour after the last look: %q", msg)
+	}
+}
+
 func TestBranches(t *testing.T) {
 	repo, _ := gittest.NewRepo(t)
 	if b, err := Branches(ctx, repo); err != nil || len(b) != 0 {

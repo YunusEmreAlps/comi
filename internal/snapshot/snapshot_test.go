@@ -312,6 +312,47 @@ func TestTakeSeesDeletesAndNewFolders(t *testing.T) {
 	}
 }
 
+// inLatest reports whether the newest snapshot of main has file.
+func inLatest(repo, file string) bool {
+	_, err := git.Run(ctx, repo, "cat-file", "-e", Ref("main")+":"+file)
+	return err == nil
+}
+
+func TestTakeLeavesOutLargeFiles(t *testing.T) {
+	defer func(old int64) { maxFileSize = old }(maxFileSize)
+	maxFileSize = 10
+	repo, _ := gittest.NewRepo(t)
+
+	gittest.WriteFile(t, repo, "big.bin", "more than ten bytes")
+	gittest.WriteFile(t, repo, "grows.txt", "small")
+	msg := take(t, repo, Options{}, t0)
+	if !strings.HasPrefix(msg, "snapshot ") || !strings.HasSuffix(msg, "left out big.bin (over 10 bytes)") {
+		t.Errorf("message = %q", msg)
+	}
+	if inLatest(repo, "big.bin") || !inLatest(repo, "grows.txt") {
+		t.Error("want grows.txt saved and big.bin left out")
+	}
+	// Reported again while it is there, even with nothing else to save.
+	if msg := take(t, repo, Options{}, t0.Add(time.Minute)); msg != "no changes, left out big.bin (over 10 bytes)" {
+		t.Errorf("message = %q", msg)
+	}
+
+	// A saved file that grows too large is dropped, not kept at its old size.
+	gittest.WriteFile(t, repo, "grows.txt", "now more than ten bytes")
+	gittest.WriteFile(t, repo, "c.txt", "c")
+	msg = take(t, repo, Options{}, t0.Add(2*time.Minute))
+	if !strings.Contains(msg, "left out 2 files over 10 bytes (big.bin, grows.txt)") || inLatest(repo, "grows.txt") {
+		t.Errorf("grown file: message = %q, saved = %v", msg, inLatest(repo, "grows.txt"))
+	}
+
+	// Large files the user tracks are saved: a restore would delete them otherwise.
+	gittest.Git(t, repo, "add", "big.bin")
+	msg = take(t, repo, Options{}, t0.Add(3*time.Minute))
+	if !inLatest(repo, "big.bin") || strings.Contains(msg, "big.bin") {
+		t.Errorf("tracked large file: message = %q, saved = %v", msg, inLatest(repo, "big.bin"))
+	}
+}
+
 func TestTakeFollowsIgnoreChanges(t *testing.T) {
 	repo, _ := gittest.NewRepo(t)
 	saved := func(file string) bool {

@@ -32,12 +32,9 @@ func cmdSnapshot(args []string) error {
 	if err != nil {
 		return err
 	}
-	opts := snapshot.Options{Keep: snapshot.DefaultPolicy}
-	if p != nil && p.IsSnapshot() {
-		opts.Push = !p.NoPush
-		if opts.Keep, err = snapshot.ParsePolicy(p.Keep); err != nil {
-			return err
-		}
+	opts, err := snapshotOptions(p)
+	if err != nil {
+		return err
 	}
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "push" {
@@ -51,6 +48,22 @@ func cmdSnapshot(args []string) error {
 	}
 	fmt.Println(msg)
 	return nil
+}
+
+// snapshotOptions are what a snapshot taken outside the scheduler uses: the
+// project's push and keep settings if it's a snapshot project (p is nil for
+// a repository comi doesn't manage), otherwise no push and the default
+// retention.
+func snapshotOptions(p *config.Project) (snapshot.Options, error) {
+	opts := snapshot.Options{Keep: snapshot.DefaultPolicy}
+	if p != nil && p.IsSnapshot() {
+		opts.Push = !p.NoPush
+		var err error
+		if opts.Keep, err = snapshot.ParsePolicy(p.Keep); err != nil {
+			return opts, err
+		}
+	}
+	return opts, nil
 }
 
 func cmdHistory(args []string) error {

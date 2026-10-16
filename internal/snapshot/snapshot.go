@@ -16,7 +16,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,15 +118,17 @@ func Take(ctx context.Context, repo string, opts Options, now time.Time) (string
 		return fmt.Sprintf("skipped: on branch %q, only snapshots %q", st.branch, opts.Branch), nil
 	}
 
-	snap, err := save(ctx, repo, &st, now)
+	snap, leftOut, err := save(ctx, repo, &st, now)
 	if err != nil {
 		return "", err
 	}
-	removed, tip, err := prune(ctx, repo, st.branch, st.tip, opts.Keep, now, true, false)
-	if err != nil {
-		return "", fmt.Errorf("removing old snapshots: %w", err)
+	var removed []Snapshot
+	if !opts.Keep.Forever() && pruneCheckDue(st.gitDir, now) {
+		if removed, st.tip, err = prune(ctx, repo, st.branch, st.tip, opts.Keep, now, true, false); err != nil {
+			return "", fmt.Errorf("removing old snapshots: %w", err)
+		}
+		markPruneCheck(st.gitDir, now)
 	}
-	st.tip = tip
 
 	msg := "no changes"
 	if snap != nil {
@@ -134,6 +138,9 @@ func Take(ctx context.Context, repo string, opts Options, now time.Time) (string
 	}
 	if len(removed) > 0 {
 		msg += fmt.Sprintf(", removed %d old %s", len(removed), plural(len(removed), "snapshot", "snapshots"))
+	}
+	if len(leftOut) > 0 {
+		msg += ", " + leftOutNote(leftOut)
 	}
 	if !opts.Push {
 		return msg, nil
@@ -154,17 +161,18 @@ func Take(ctx context.Context, repo string, opts Options, now time.Time) (string
 }
 
 // save writes a snapshot commit and moves the branch's snapshot ref to it.
-// It returns nil when the working tree matches HEAD or the last snapshot.
-func save(ctx context.Context, repo string, st *state, now time.Time) (*Snapshot, error) {
+// It returns nil when the working tree matches HEAD or the last snapshot,
+// and in any case the files it left out for being too large.
+func save(ctx context.Context, repo string, st *state, now time.Time) (*Snapshot, []string, error) {
 	idx, err := openIndex(st.gitDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer idx.close()
 
-	tree, err := idx.writeTree(ctx, st.root)
+	tree, leftOut, err := idx.writeTree(ctx, st.root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	unchanged := func(tree string) bool { return tree == st.headTree || tree == st.tipTree }
 	if !unchanged(tree) {
@@ -172,17 +180,17 @@ func save(ctx context.Context, repo string, st *state, now time.Time) (*Snapshot
 		// find nothing changed and never get here.
 		synced, err := idx.syncIgnored(ctx, st.root)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if synced {
-			if tree, err = idx.writeTree(ctx, st.root); err != nil {
-				return nil, err
+			if tree, leftOut, err = idx.writeTree(ctx, st.root); err != nil {
+				return nil, nil, err
 			}
 		}
 	}
 	idx.keep()
 	if unchanged(tree) {
-		return nil, nil // nothing uncommitted, or the same as the last snapshot
+		return nil, leftOut, nil // nothing uncommitted, or the same as the last snapshot
 	}
 
 	var changed string
@@ -192,24 +200,62 @@ func save(ctx context.Context, repo string, st *state, now time.Time) (*Snapshot
 		changed, err = git.Run(ctx, repo, "ls-tree", "-r", "--name-only", tree)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if changed == "" {
-		return nil, nil // a repository without commits or files
+		return nil, leftOut, nil // a repository without commits or files
 	}
 	files := len(strings.Split(changed, "\n"))
 
 	id, err := commitTree(ctx, repo, tree, []string{st.tip, st.head}, st.branch, files, now)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Passing the old value makes the update fail instead of losing a
 	// snapshot written concurrently.
 	if _, err := git.Run(ctx, repo, "update-ref", "-m", subjectPrefix, Ref(st.branch), id, st.tip); err != nil {
-		return nil, fmt.Errorf("update-ref: %w", err)
+		return nil, nil, fmt.Errorf("update-ref: %w", err)
 	}
 	st.tip, st.tipTree = id, tree
-	return &Snapshot{ID: id, Time: now, Branch: st.branch, Files: files}, nil
+	return &Snapshot{ID: id, Time: now, Branch: st.branch, Files: files}, leftOut, nil
+}
+
+// leftOutNote tells which files a snapshot left out for being too large.
+func leftOutNote(paths []string) string {
+	limit := fmt.Sprintf("over %d MB", maxFileSize>>20)
+	if maxFileSize < 1<<20 {
+		limit = fmt.Sprintf("over %d bytes", maxFileSize)
+	}
+	if len(paths) == 1 {
+		return fmt.Sprintf("left out %s (%s)", paths[0], limit)
+	}
+	names := strings.Join(paths[:min(len(paths), 3)], ", ")
+	if len(paths) > 3 {
+		names += ", ..."
+	}
+	return fmt.Sprintf("left out %d files %s (%s)", len(paths), limit, names)
+}
+
+// pruneCheckFile records, in the git directory, when Take last looked for
+// old snapshots to remove. Removing one waits a day (pruneDelay) anyway, so
+// looking hourly is enough and spares most snapshots a git process.
+const pruneCheckFile = "comi-pruned"
+
+func pruneCheckDue(gitDir string, now time.Time) bool {
+	data, err := os.ReadFile(filepath.Join(gitDir, pruneCheckFile))
+	if err != nil {
+		return true
+	}
+	unix, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return true
+	}
+	since := now.Sub(time.Unix(unix, 0))
+	return since < 0 || since >= time.Hour
+}
+
+func markPruneCheck(gitDir string, now time.Time) {
+	os.WriteFile(filepath.Join(gitDir, pruneCheckFile), []byte(strconv.FormatInt(now.Unix(), 10)), 0o644)
 }
 
 // commitTree writes a snapshot commit. Empty parents are skipped. The same
@@ -362,7 +408,7 @@ func Restore(ctx context.Context, repo string, snap Snapshot, paths []string, no
 	st, err := readState(ctx, repo)
 	var backup *Snapshot
 	if err == nil {
-		backup, err = save(ctx, repo, &st, now)
+		backup, _, err = save(ctx, repo, &st, now)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("could not save the current state before restoring: %w", err)

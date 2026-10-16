@@ -29,6 +29,7 @@ notes  commit    09:00,18:00  Wed 2026-10-14 09:00  main    no    -          dai
   - **commit**: real commits on your branch, pushed for you. Good for notes, docs and dotfiles.
   - **snapshot**: a safety net for code. Uncommitted work is saved to hidden refs every few minutes; your branch, history and staging area are never touched.
 - **Get lost work back.** After a `git reset --hard`, a `git clean`, a bad merge or an AI agent "cleaning up", `comi restore 10m` brings the files back.
+- **Guards AI coding agents.** A [Claude Code hook](#with-ai-coding-agents) snapshots your work right before every shell command the agent runs.
 - **A schedule per project**: every `30m` or `2h`, or daily at `20:00` / `09:00,18:00`.
 - **One background process** for all your repositories. Add or remove projects while it runs.
 - **Off-machine backup.** Snapshots are pushed to `origin` as hidden refs, not branches. A failed push (offline, auth) stays local and is retried on the next run.
@@ -118,10 +119,11 @@ restored all files from snapshot 2bb2416c (Tue 2026-10-13 21:22)
 - **Works in any state**: detached HEAD, mid-rebase, a conflicted merge. That's often exactly when you need it.
 - **Works in any git repository.** `snapshot`, `history`, `diff`, `restore` and `prune` don't need the project to be added; only scheduled snapshots do.
 - **One history per branch.** Commands use the current branch's snapshots; `-b <branch>` picks another one.
+- **Large files stay out.** Files over 50 MB that git doesn't track are left out, and comi names them: reading them on every change is slow, and GitHub refuses files over 100 MB, which would make every later push fail. Files you track are always saved.
 
 ### Keeping old snapshots
 
-Old snapshots are thinned out during scheduled runs, about once a day. The default policy, `24h,7d,30d`, keeps:
+Old snapshots are thinned out as new ones are taken, about once a day. The default policy, `24h,7d,30d`, keeps:
 
 | Age | Kept |
 | --- | --- |
@@ -140,12 +142,36 @@ Set another policy per project with `-keep`, for example `comi add . -mode snaps
 
 - Snapshots of branch `main` live under `refs/comi/main` (`refs/comi/detached` in detached HEAD). Refs outside `refs/heads` are not branches, so they don't show up in `git branch` or as branches on GitHub.
 - A snapshot is built on comi's own index, `.git/comi-index`, which starts as a copy of yours, so your real index is never modified. It remembers what the last snapshot saw, so only files that changed since are read again. Files in `.gitignore` are left out, as `git add -A` would.
+- `.git/comi-pruned` holds when comi last looked for old snapshots to remove. It looks at most once an hour.
 - Each snapshot's first parent is the previous snapshot and its second parent is the commit you were on, so `git log --first-parent refs/comi/main` shows them all.
 - A new snapshot is only made when something changed since the last one and the files differ from your last commit.
 - Pruning rebuilds the chain from the oldest kept snapshot with the same trees, times and parents, in one `git fast-import`, then moves the ref only if no snapshot was taken meanwhile. Disk space is freed when git's garbage collection removes the unreferenced objects.
 - With push enabled, the ref is pushed to `origin` as `refs/comi/<branch>`. `refs/comi-pushed/<branch>` remembers what was sent, so failed pushes are retried without contacting the remote.
 
 </details>
+
+### With AI coding agents
+
+Claude Code can rewind the edits it makes to files, but not what its shell commands do: an `rm`, a `git checkout .` or a `git reset --hard` is out of its reach. `comi hook` takes a snapshot right before each shell command. Add it to `~/.claude/settings.json` for all your projects, or to a project's `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [{ "type": "command", "command": "comi hook" }]
+      }
+    ]
+  }
+}
+```
+
+- It snapshots whichever repository the agent is working in, added to comi or not. Outside a git repository it does nothing.
+- It never stops a command. If a snapshot can't be taken, the command runs anyway, and the reason goes to Claude Code's debug log.
+- Snapshots stay local. For projects added with `-mode snapshot`, `comi run` pushes them on its next run.
+- When nothing changed since the last snapshot, it only checks: a few git commands, a fraction of a second.
+- To undo what a command did, use `comi history` and `comi restore` as usual.
 
 ## Schedules
 
@@ -171,6 +197,7 @@ Times use your computer's local time zone. If comi wasn't running when a run was
 | `comi diff <snapshot> [-p project] [-b branch] [-stat]` | Show what changed between a snapshot and your files now. |
 | `comi restore <snapshot> [-p project] [-b branch] [file ...]` | Put files back from a snapshot (all files if none given). |
 | `comi prune [-p project] [-keep policy] [-n]` | Remove old snapshots now, on every branch. `-n` only lists them. |
+| `comi hook` | Take a snapshot for a Claude Code hook, see [With AI coding agents](#with-ai-coding-agents). |
 | `comi version` | Show the installed version. |
 | `comi help` | Show usage. |
 
