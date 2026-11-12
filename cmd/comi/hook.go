@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"comi/internal/snapshot"
+	"github.com/YunusEmreAlps/comi/internal/snapshot"
 )
 
 // hookTimeout bounds a snapshot taken for a hook, as the agent's command

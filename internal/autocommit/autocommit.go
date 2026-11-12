@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/git"
 )
 
 const DefaultMessage = "auto: {date} {time}"

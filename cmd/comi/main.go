@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"os"
 
-	"comi/internal/autocommit"
-	"comi/internal/config"
+	"github.com/YunusEmreAlps/comi/internal/autocommit"
+	"github.com/YunusEmreAlps/comi/internal/config"
 )
 
 const usage = `comi - scheduled git commits and snapshots
 
 Projects:
-  comi add [path] [flags]        add a project, or update one
+  comi projects add <namespace> <directory>
+                                 map a prefix so you can use targets like work/api
+  comi projects list            list namespace roots
+  comi add [path] [flags]        add a project by path or namespace/repo, or update one
       -mode commit|snapshot      commit: real commits on your branch (default)
                                  snapshot: hidden backups, your branch is never touched
       -s <schedule>              when to run (default: 1h, or 5m for snapshots)
@@ -22,6 +25,7 @@ Projects:
       -n <name>                  project name (default: folder name)
       -no-push                   keep everything local
   comi list                      projects and their next run
+  comi status [name|path]        scheduler, last run, backup and push status
   comi remove <name|path> ...
   comi now [name|path ...]       run right away (all projects if none given)
   comi run                       start the scheduler (keep it running)
@@ -30,9 +34,8 @@ Snapshots (work in any git repository; -p defaults to the current directory):
   comi snapshot [-p project]                    take a snapshot now
   comi history  [-p project] [-b branch] [-n N] list snapshots
   comi diff     <snapshot> [-p project] [-stat] compare a snapshot with your files
-  comi restore  <snapshot> [-p project] [file ...]
-                                                put files back from a snapshot;
-                                                the current state is snapshotted first
+  comi restore  <snapshot> [-p project] [-b branch] [-n] [file ...]
+                                                restore files (-n: preview changes)
   comi prune    [-p project] [-keep policy] [-n]
                                                 remove old snapshots now (-n: dry run)
   comi hook                                     snapshot before an AI agent's shell
@@ -61,7 +64,9 @@ func main() {
 
 	commands := map[string]func([]string) error{
 		"add":      cmdAdd,
+		"projects": cmdProjects,
 		"list":     cmdList,
+		"status":   cmdStatus,
 		"ls":       cmdList,
 		"remove":   cmdRemove,
 		"rm":       cmdRemove,

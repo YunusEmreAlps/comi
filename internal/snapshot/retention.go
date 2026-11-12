@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/git"
 )
 
 const day = 24 * time.Hour

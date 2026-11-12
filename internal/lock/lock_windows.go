@@ -2,24 +2,26 @@ package lock
 
 import (
 	"errors"
+	"os"
 	"syscall"
+	"unsafe"
 )
 
-func processAlive(pid int) bool {
-	const (
-		processQueryLimitedInformation = 0x1000
-		stillActive                    = 259
-	)
-	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
-	if err != nil {
-		// Access denied means the process exists but belongs to someone else.
-		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
-	}
-	defer syscall.CloseHandle(h)
+var lockFileEx = syscall.NewLazyDLL("kernel32.dll").NewProc("LockFileEx")
 
-	var code uint32
-	if err := syscall.GetExitCodeProcess(h, &code); err != nil {
-		return false
+func tryLock(f *os.File) error {
+	const (
+		failImmediately = 1
+		exclusiveLock   = 2
+		lockViolation   = syscall.Errno(33)
+	)
+	var offset syscall.Overlapped
+	result, _, err := lockFileEx.Call(f.Fd(), failImmediately|exclusiveLock, 0, 1, 0, uintptr(unsafe.Pointer(&offset)))
+	if result != 0 {
+		return nil
 	}
-	return code == stillActive
+	if errors.Is(err, lockViolation) {
+		return ErrBusy
+	}
+	return err
 }

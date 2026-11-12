@@ -16,12 +16,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"comi/internal/autocommit"
-	"comi/internal/config"
-	"comi/internal/git"
-	"comi/internal/lock"
-	"comi/internal/schedule"
-	"comi/internal/snapshot"
+	"github.com/YunusEmreAlps/comi/internal/autocommit"
+	"github.com/YunusEmreAlps/comi/internal/config"
+	"github.com/YunusEmreAlps/comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/lock"
+	"github.com/YunusEmreAlps/comi/internal/schedule"
+	"github.com/YunusEmreAlps/comi/internal/snapshot"
 )
 
 const (
@@ -56,11 +56,11 @@ func cmdAdd(args []string) error {
 	} else {
 		path = pos[0]
 	}
-	abs, err := filepath.Abs(path)
+	abs, base, err := projectPath(path)
 	if err != nil {
 		return err
 	}
-	root, err := git.Root(abs)
+	root, err := repositoryRoot(path, abs, base)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func cmdAdd(args []string) error {
 	}
 
 	// Re-adding a known project updates it; settings not given are kept.
-	existing := cfg.Find(root)
+	existing := cfg.FindPath(root)
 	p := config.Project{Name: filepath.Base(root), Mode: config.ModeCommit}
 	if existing >= 0 {
 		p = cfg.Projects[existing]
@@ -151,7 +151,7 @@ func cmdAdd(args []string) error {
 	}
 
 	if set["n"] {
-		if i := cfg.Find(*name); i >= 0 && i != existing {
+		if i := cfg.FindName(*name); i >= 0 && i != existing {
 			return fmt.Errorf("name %q is already used by %s", *name, cfg.Projects[i].Path)
 		}
 		p.Name = *name
@@ -232,9 +232,9 @@ func cmdRemove(args []string) error {
 		return err
 	}
 	for _, key := range args {
-		i := cfg.Find(key)
-		if i < 0 {
-			return fmt.Errorf("project %q not found", key)
+		i, err := registeredProject(cfg, key)
+		if err != nil {
+			return err
 		}
 		fmt.Println("removed", cfg.Projects[i].Name)
 		cfg.Projects = append(cfg.Projects[:i], cfg.Projects[i+1:]...)
@@ -251,9 +251,9 @@ func cmdNow(args []string) error {
 	if len(args) > 0 {
 		projects = nil
 		for _, key := range args {
-			i := cfg.Find(key)
-			if i < 0 {
-				return fmt.Errorf("project %q not found", key)
+			i, err := registeredProject(cfg, key)
+			if err != nil {
+				return err
 			}
 			projects = append(projects, cfg.Projects[i])
 		}
@@ -265,13 +265,21 @@ func cmdNow(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	now := time.Now()
+	var updates []config.RunUpdate
 	failed := false
-	for i, r := range runAll(ctx, projects, time.Now()) {
+	for i, r := range runAll(ctx, projects, now) {
+		updates = append(updates, r.update(projects[i].Path, now, false))
 		if r.err != nil {
 			failed = true
 			fmt.Printf("%s: error: %v\n", projects[i].Name, r.err)
 		} else {
 			fmt.Printf("%s: %s\n", projects[i].Name, r.msg)
+		}
+	}
+	if ctx.Err() == nil {
+		if err := config.RecordRuns(ctx, updates); err != nil {
+			return fmt.Errorf("recording run status: %w", err)
 		}
 	}
 	if failed {
@@ -339,6 +347,7 @@ func runDue(ctx context.Context) error {
 		return nil
 	}
 
+	var updates []config.RunUpdate
 	for i, r := range runAll(ctx, due, now) {
 		if ctx.Err() != nil {
 			return nil // interrupted: leave state so these run again next start
@@ -348,14 +357,24 @@ func runDue(ctx context.Context) error {
 		} else {
 			log.Printf("%s: %s", due[i].Name, r.msg)
 		}
-		state[due[i].Path] = now
+		updates = append(updates, r.update(due[i].Path, now, true))
 	}
-	return state.Save()
+	return config.RecordRuns(ctx, updates)
 }
 
 type result struct {
 	msg string
 	err error
+}
+
+func (r result) update(path string, now time.Time, scheduled bool) config.RunUpdate {
+	u := config.RunUpdate{Path: path, At: now, Scheduled: scheduled, Result: r.msg}
+	if r.err != nil {
+		u.Error = r.err.Error()
+	} else {
+		u.Successful = !strings.HasPrefix(r.msg, "skipped:")
+	}
+	return u
 }
 
 // runAll runs the projects in parallel.

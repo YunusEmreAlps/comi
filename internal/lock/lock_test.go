@@ -42,11 +42,34 @@ func TestAcquireLockTakesOverStaleLock(t *testing.T) {
 	}
 }
 
-func TestProcessAlive(t *testing.T) {
-	if !processAlive(os.Getpid()) {
-		t.Error("current process should be alive")
+func TestConcurrentAcquire(t *testing.T) {
+	dir := t.TempDir()
+	const contenders = 16
+	type result struct {
+		release func()
+		err     error
 	}
-	if processAlive(999999999) {
-		t.Error("PID 999999999 should not be alive")
+	start := make(chan struct{})
+	results := make(chan result, contenders)
+	for range contenders {
+		go func() {
+			<-start
+			release, err := Acquire(dir)
+			results <- result{release, err}
+		}()
+	}
+	close(start)
+	acquired := 0
+	for range contenders {
+		r := <-results
+		if r.err == nil {
+			acquired++
+			defer r.release() // hold every acquired lock until all contenders finish
+		} else if !strings.Contains(r.err.Error(), "already running") {
+			t.Errorf("unexpected lock error: %v", r.err)
+		}
+	}
+	if acquired != 1 {
+		t.Errorf("%d contenders acquired the lock, want 1", acquired)
 	}
 }

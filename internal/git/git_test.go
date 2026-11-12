@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"comi/internal/git"
-	"comi/internal/gittest"
+	"github.com/YunusEmreAlps/comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/gittest"
 )
 
 var ctx = context.Background()

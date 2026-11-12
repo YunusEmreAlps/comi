@@ -11,9 +11,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"comi/internal/config"
-	"comi/internal/git"
-	"comi/internal/snapshot"
+	"github.com/YunusEmreAlps/comi/internal/config"
+	"github.com/YunusEmreAlps/comi/internal/snapshot"
 )
 
 func cmdSnapshot(args []string) error {
@@ -123,12 +122,16 @@ func cmdDiff(args []string) error {
 	if err != nil {
 		return err
 	}
+	tree, err := snapshot.WorkingTree(context.Background(), repo)
+	if err != nil {
+		return err
+	}
 	gitArgs := []string{"diff"}
 	if *stat {
 		gitArgs = append(gitArgs, "--stat")
 	}
 	// Show what changed from the snapshot to the files on disk now.
-	cmd := exec.Command("git", append(gitArgs, snap.ID)...)
+	cmd := exec.Command("git", append(gitArgs, snap.ID, tree, "--")...)
 	cmd.Dir = repo
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
@@ -138,26 +141,48 @@ func cmdRestore(args []string) error {
 	fs := newFlagSet("restore")
 	project := fs.String("p", ".", "project name or path")
 	branch := fs.String("b", "", "branch whose snapshots to use (default: the current branch)")
+	dryRun := fs.Bool("n", false, "show which files would be written or deleted")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) == 0 {
-		return errors.New("usage: comi restore <snapshot> [-p project] [file ...]")
+		return errors.New("usage: comi restore <snapshot> [-p project] [-b branch] [-n] [file ...]")
 	}
 
 	repo, snap, err := findSnapshot(*project, *branch, pos[0])
 	if err != nil {
 		return err
 	}
-	// Paths are relative to where the user is, not to the repository root.
+	useProjectRoot := false
+	fs.Visit(func(f *flag.Flag) { useProjectRoot = useProjectRoot || f.Name == "p" })
 	var paths []string
 	for _, p := range pos[1:] {
+		if useProjectRoot && !filepath.IsAbs(p) {
+			p = filepath.Join(repo, p)
+		}
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return err
 		}
 		paths = append(paths, abs)
+	}
+	if *dryRun {
+		plan, err := snapshot.PreviewRestore(context.Background(), repo, snap, paths)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Restore preview for snapshot %s\n", snap.Short())
+		for _, p := range plan.Write {
+			fmt.Printf("  write  %q\n", p)
+		}
+		for _, p := range plan.Delete {
+			fmt.Printf("  delete %q\n", p)
+		}
+		if len(plan.Write)+len(plan.Delete) == 0 {
+			fmt.Println("  no file changes")
+		}
+		return nil
 	}
 
 	backup, err := snapshot.Restore(context.Background(), repo, snap, paths, time.Now())
@@ -258,18 +283,11 @@ func target(key string) (string, *config.Project, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if i := cfg.Find(key); i >= 0 {
-		return cfg.Projects[i].Path, &cfg.Projects[i], nil
-	}
-	abs, err := filepath.Abs(key)
+	root, i, err := resolveProject(cfg, key)
 	if err != nil {
 		return "", nil, err
 	}
-	root, err := git.Root(abs)
-	if err != nil {
-		return "", nil, fmt.Errorf("%q is neither a project name nor inside a git repository", key)
-	}
-	if i := cfg.Find(root); i >= 0 {
+	if i >= 0 {
 		return root, &cfg.Projects[i], nil
 	}
 	return root, nil, nil

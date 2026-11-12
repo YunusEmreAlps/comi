@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"comi/internal/git"
-	"comi/internal/gittest"
+	"github.com/YunusEmreAlps/comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/gittest"
 )
 
 func TestParsePolicy(t *testing.T) {
@@ -184,6 +184,9 @@ func TestTakePrunesWhenDue(t *testing.T) {
 	now := time.Date(2026, 1, 31, 12, 0, 0, 0, time.Local)
 	takeAt(t, repo, "old-1", now.Add(-3*day-50*time.Minute))
 	takeAt(t, repo, "old-2", now.Add(-3*day-10*time.Minute))
+	if _, err := Push(ctx, repo, "main"); err != nil {
+		t.Fatal(err)
+	}
 
 	gittest.WriteFile(t, repo, "a.txt", "new")
 	msg, err := Take(ctx, repo, Options{Keep: DefaultPolicy, Push: true}, now)

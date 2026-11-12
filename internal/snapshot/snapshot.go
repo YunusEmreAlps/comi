@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/git"
 )
 
 const (
@@ -118,7 +118,13 @@ func Take(ctx context.Context, repo string, opts Options, now time.Time) (string
 		return fmt.Sprintf("skipped: on branch %q, only snapshots %q", st.branch, opts.Branch), nil
 	}
 
-	snap, leftOut, err := save(ctx, repo, &st, now)
+	idx, tree, leftOut, err := captureTree(ctx, st.root, st.gitDir)
+	if err != nil {
+		return "", err
+	}
+	defer idx.close()
+	idx.keep()
+	snap, err := saveTree(ctx, repo, &st, tree, now)
 	if err != nil {
 		return "", err
 	}
@@ -160,64 +166,38 @@ func Take(ctx context.Context, repo string, opts Options, now time.Time) (string
 	return msg, nil
 }
 
-// save writes a snapshot commit and moves the branch's snapshot ref to it.
-// It returns nil when the working tree matches HEAD or the last snapshot,
-// and in any case the files it left out for being too large.
-func save(ctx context.Context, repo string, st *state, now time.Time) (*Snapshot, []string, error) {
-	idx, err := openIndex(st.gitDir)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer idx.close()
-
-	tree, leftOut, err := idx.writeTree(ctx, st.root)
-	if err != nil {
-		return nil, nil, err
-	}
-	unchanged := func(tree string) bool { return tree == st.headTree || tree == st.tipTree }
-	if !unchanged(tree) {
-		// Checked only when a snapshot is about to be written: most runs
-		// find nothing changed and never get here.
-		synced, err := idx.syncIgnored(ctx, st.root)
-		if err != nil {
-			return nil, nil, err
-		}
-		if synced {
-			if tree, leftOut, err = idx.writeTree(ctx, st.root); err != nil {
-				return nil, nil, err
-			}
-		}
-	}
-	idx.keep()
-	if unchanged(tree) {
-		return nil, leftOut, nil // nothing uncommitted, or the same as the last snapshot
+// saveTree writes a snapshot commit unless tree already matches HEAD or the tip.
+func saveTree(ctx context.Context, repo string, st *state, tree string, now time.Time) (*Snapshot, error) {
+	if tree == st.headTree || tree == st.tipTree {
+		return nil, nil
 	}
 
-	var changed string
+	var changed []string
+	var err error
 	if st.head != "" {
-		changed, err = git.Run(ctx, repo, "diff-tree", "-r", "--name-only", st.head, tree)
+		changed, err = git.RunZ(ctx, repo, nil, "diff-tree", "-r", "-z", "--name-only", st.head, tree)
 	} else {
-		changed, err = git.Run(ctx, repo, "ls-tree", "-r", "--name-only", tree)
+		changed, err = git.RunZ(ctx, repo, nil, "ls-tree", "-r", "-z", "--name-only", tree)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if changed == "" {
-		return nil, leftOut, nil // a repository without commits or files
+	if len(changed) == 0 {
+		return nil, nil // a repository without commits or files
 	}
-	files := len(strings.Split(changed, "\n"))
+	files := len(changed)
 
 	id, err := commitTree(ctx, repo, tree, []string{st.tip, st.head}, st.branch, files, now)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Passing the old value makes the update fail instead of losing a
 	// snapshot written concurrently.
 	if _, err := git.Run(ctx, repo, "update-ref", "-m", subjectPrefix, Ref(st.branch), id, st.tip); err != nil {
-		return nil, nil, fmt.Errorf("update-ref: %w", err)
+		return nil, fmt.Errorf("update-ref: %w", err)
 	}
 	st.tip, st.tipTree = id, tree
-	return &Snapshot{ID: id, Time: now, Branch: st.branch, Files: files}, leftOut, nil
+	return &Snapshot{ID: id, Time: now, Branch: st.branch, Files: files}, nil
 }
 
 // leftOutNote tells which files a snapshot left out for being too large.
@@ -302,6 +282,19 @@ func Push(ctx context.Context, repo, branch string) (bool, error) {
 	return push(ctx, repo, branch, ids[0], ids[1])
 }
 
+// BackupStatus reads the latest local snapshot and whether it still needs a push.
+func BackupStatus(ctx context.Context, repo, branch string) (*Snapshot, bool, error) {
+	ids, err := git.ResolveAll(ctx, repo, Ref(branch), pushedPrefix+branch)
+	if err != nil {
+		return nil, false, err
+	}
+	snaps, err := list(ctx, repo, branch, ids[0], 1)
+	if err != nil || len(snaps) == 0 {
+		return nil, false, err
+	}
+	return &snaps[0], ids[0] != ids[1], nil
+}
+
 // push sends tip, the branch's newest snapshot, to origin unless pushed says
 // origin has it already.
 func push(ctx context.Context, repo, branch, tip, pushed string) (bool, error) {
@@ -311,11 +304,33 @@ func push(ctx context.Context, repo, branch, tip, pushed string) (bool, error) {
 	if !git.HasRemote(ctx, repo, "origin") {
 		return false, nil
 	}
-	if _, err := git.Run(ctx, repo, "push", "-q", "origin", "+"+tip+":"+Ref(branch)); err != nil {
+	ref := Ref(branch)
+	send := func(expected string) (string, error) {
+		return git.RunEnv(ctx, repo, []string{"LC_ALL=C"}, "push", "--porcelain", "--force-with-lease="+ref+":"+expected, "origin", tip+":"+ref)
+	}
+	out, err := send(pushed)
+	if err != nil && strings.Contains(out, "\t[rejected] (stale info)") {
+		// The last push may have reached origin before the local marker was
+		// recorded. A fast-forward keeps all of origin's snapshots intact.
+		remote, lookupErr := git.Run(ctx, repo, "ls-remote", "--refs", "origin", ref)
+		if lookupErr != nil {
+			return false, lookupErr
+		}
+		fields := strings.Fields(remote)
+		if len(fields) != 2 || fields[1] != ref {
+			return false, fmt.Errorf("snapshot ref %s changed on origin: %w", ref, err)
+		}
+		if _, ancestorErr := git.Run(ctx, repo, "merge-base", "--is-ancestor", fields[0], tip); ancestorErr != nil {
+			return false, fmt.Errorf("snapshot history for %s on origin is outside the local history. The local snapshot was kept", branch)
+		}
+		_, err = send(fields[0])
+	}
+	if err != nil {
 		return false, err
 	}
-	if _, err := git.Run(ctx, repo, "update-ref", pushedPrefix+branch, tip); err != nil {
-		return false, err
+	marker := pushedPrefix + branch
+	if _, err := git.Run(ctx, repo, "update-ref", marker, tip, pushed); err != nil && git.Resolve(ctx, repo, marker) != tip {
+		return false, fmt.Errorf("recording the pushed snapshot: %w", err)
 	}
 	return true, nil
 }
@@ -402,19 +417,28 @@ func Find(ctx context.Context, repo, branch, query string, now time.Time) (Snaps
 }
 
 // Restore puts files from a snapshot back into the working tree; with no
-// paths, the whole tree. The index and HEAD are not changed. The current
-// state is snapshotted first, so a restore can itself be undone.
+// paths, the whole tree. The index and HEAD are not changed. A new backup
+// is saved when the current tree differs from HEAD and the last snapshot.
 func Restore(ctx context.Context, repo string, snap Snapshot, paths []string, now time.Time) (*Snapshot, error) {
 	st, err := readState(ctx, repo)
-	var backup *Snapshot
-	if err == nil {
-		backup, _, err = save(ctx, repo, &st, now)
+	if err != nil {
+		return nil, fmt.Errorf("could not read the current state before restoring: %w", err)
 	}
+	idx, tree, _, err := captureTree(ctx, st.root, st.gitDir)
 	if err != nil {
 		return nil, fmt.Errorf("could not save the current state before restoring: %w", err)
 	}
+	defer idx.close()
 	if len(paths) == 0 {
 		paths = []string{":/"}
+	}
+	if err := idx.checkRestore(ctx, st.root, tree, snap.ID, paths); err != nil {
+		return nil, err
+	}
+	idx.keep()
+	backup, err := saveTree(ctx, repo, &st, tree, now)
+	if err != nil {
+		return nil, fmt.Errorf("could not save the current state before restoring: %w", err)
 	}
 	args := append([]string{"restore", "--source=" + snap.ID, "--worktree", "--"}, paths...)
 	if _, err := git.Run(ctx, repo, args...); err != nil {

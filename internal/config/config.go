@@ -37,10 +37,6 @@ type Config struct {
 	Projects []Project `json:"projects"`
 }
 
-// State holds the last run time of each project, keyed by path. It lives in a
-// separate file so the scheduler never overwrites projects added while it runs.
-type State map[string]time.Time
-
 const (
 	configFile = "projects.json"
 	stateFile  = "state.json"
@@ -65,26 +61,20 @@ func Load() (*Config, error) {
 
 func (c *Config) Save() error { return writeJSON(configFile, c) }
 
-func LoadState() (State, error) {
-	s := State{}
-	return s, readJSON(stateFile, &s)
-}
-
-func (s State) Save() error { return writeJSON(stateFile, s) }
-
-// LastRun is the reference point for the project's next run.
-func (s State) LastRun(p Project) time.Time {
-	if t := s[p.Path]; t.After(p.Added) {
-		return t
-	}
-	return p.Added
-}
-
-// Find returns the index of the project matching a name or path, or -1.
-func (c *Config) Find(key string) int {
-	abs, _ := filepath.Abs(key)
+// FindName returns the index of the project with the given name, or -1.
+func (c *Config) FindName(name string) int {
 	for i, p := range c.Projects {
-		if p.Name == key || samePath(p.Path, abs) {
+		if p.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// FindPath returns the index of the project with the given absolute path.
+func (c *Config) FindPath(path string) int {
+	for i, p := range c.Projects {
+		if samePath(p.Path, path) {
 			return i
 		}
 	}
@@ -96,7 +86,7 @@ func (c *Config) Find(key string) int {
 func (c *Config) UniqueName(name string, self int) string {
 	candidate := name
 	for n := 2; ; n++ {
-		if i := c.Find(candidate); i < 0 || i == self {
+		if i := c.FindName(candidate); i < 0 || i == self {
 			return candidate
 		}
 		candidate = fmt.Sprintf("%s-%d", name, n)

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"comi/internal/gittest"
+	"github.com/YunusEmreAlps/comi/internal/gittest"
 )
 
 var now = time.Date(2026, 1, 15, 20, 0, 0, 0, time.Local)

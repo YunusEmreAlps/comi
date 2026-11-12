@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"comi/internal/git"
-	"comi/internal/gittest"
+	"github.com/YunusEmreAlps/comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/gittest"
 )
 
 var (
@@ -219,6 +219,40 @@ func TestTakePushesToHiddenRef(t *testing.T) {
 	}
 }
 
+func TestPushDoesNotOverwriteSnapshotsFromAnotherClone(t *testing.T) {
+	repo, remote := gittest.NewRepo(t)
+	clone := filepath.Join(t.TempDir(), "clone")
+	gittest.Git(t, repo, "clone", "-q", remote, clone)
+	gittest.WriteFile(t, repo, "original.txt", "original\n")
+	take(t, repo, Options{Push: true}, t0)
+	ref := Ref("main")
+	firstTip := gittest.Git(t, remote, "rev-parse", ref)
+
+	// The remote can advance safely after a push whose local marker was lost.
+	marker := pushedPrefix + "main"
+	gittest.Git(t, repo, "update-ref", "-d", marker)
+	gittest.WriteFile(t, repo, "original.txt", "newer\n")
+	take(t, repo, Options{Push: true}, t0.Add(time.Minute))
+	remoteTip := gittest.Git(t, remote, "rev-parse", ref)
+	if got := gittest.Git(t, remote, "rev-parse", ref+"^1"); got != firstTip {
+		t.Errorf("remote parent = %q, want %q", got, firstTip)
+	}
+	if got := gittest.Git(t, repo, "rev-parse", marker); got != remoteTip {
+		t.Errorf("push marker = %q, want %q", got, remoteTip)
+	}
+
+	gittest.WriteFile(t, clone, "other.txt", "other\n")
+	if _, err := Take(ctx, clone, Options{Push: true}, t0.Add(2*time.Minute)); err == nil || !strings.Contains(err.Error(), "outside the local history") {
+		t.Fatalf("expected the conflicting push to fail, got %v", err)
+	}
+	if got := gittest.Git(t, remote, "rev-parse", ref); got != remoteTip {
+		t.Errorf("remote tip = %q, want %q", got, remoteTip)
+	}
+	if got := gittest.Git(t, clone, "show", ref+":other.txt"); got != "other" {
+		t.Errorf("local snapshot = %q, want other", got)
+	}
+}
+
 func TestRestore(t *testing.T) {
 	repo, _ := gittest.NewRepo(t)
 	gittest.WriteFile(t, repo, "a.txt", "good")
@@ -262,6 +296,58 @@ func TestRestore(t *testing.T) {
 	}
 	if staged := gittest.Git(t, repo, "diff", "--cached", "--name-only"); staged != "" {
 		t.Errorf("restore changed the index: %q", staged)
+	}
+}
+
+func TestRestoreBacksUpForceAddedIgnoredFile(t *testing.T) {
+	repo := gittest.NewLocalRepo(t, t.TempDir())
+	gittest.WriteFile(t, repo, ".gitignore", "*.log\n")
+	gittest.WriteFile(t, repo, "README.md", "base\n")
+	gittest.Git(t, repo, "add", "-A")
+	gittest.Git(t, repo, "commit", "-qm", "base")
+	gittest.WriteFile(t, repo, "README.md", "snapshot\n")
+	take(t, repo, Options{}, t0)
+	snap, err := Find(ctx, repo, "main", "latest", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gittest.WriteFile(t, repo, "work.log", "staged\n")
+	gittest.Git(t, repo, "add", "-f", "work.log")
+	gittest.WriteFile(t, repo, "work.log", "unstaged edits\n")
+	backup, err := Restore(ctx, repo, snap, nil, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup == nil || gittest.Git(t, repo, "show", backup.ID+":work.log") != "unstaged edits" {
+		t.Fatal("restore did not save the unstaged edits")
+	}
+	if _, err := Restore(ctx, repo, *backup, nil, t0.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := gittest.ReadFile(t, repo, "work.log"); got != "unstaged edits\n" {
+		t.Errorf("restored work.log = %q", got)
+	}
+	if got := gittest.Git(t, repo, "show", ":work.log"); got != "staged" {
+		t.Errorf("staged work.log = %q", got)
+	}
+}
+
+func TestRestoreProtectsFileExcludedFromBackup(t *testing.T) {
+	repo := gittest.NewLocalRepo(t, t.TempDir())
+	gittest.WriteFile(t, repo, "work.log", "old\n")
+	take(t, repo, Options{}, t0)
+	snap, err := Find(ctx, repo, "main", "latest", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gittest.WriteFile(t, repo, ".gitignore", "*.log\n")
+	gittest.WriteFile(t, repo, "work.log", "keep me\n")
+	if _, err := Restore(ctx, repo, snap, []string{filepath.Join(repo, "work.log")}, t0.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "missing from the backup") {
+		t.Fatalf("restore should protect the ignored file, got %v", err)
+	}
+	if got := gittest.ReadFile(t, repo, "work.log"); got != "keep me\n" {
+		t.Errorf("work.log = %q", got)
 	}
 }
 

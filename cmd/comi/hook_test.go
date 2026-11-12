@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"comi/internal/config"
-	"comi/internal/git"
-	"comi/internal/gittest"
-	"comi/internal/snapshot"
+	"github.com/YunusEmreAlps/comi/internal/config"
+	"github.com/YunusEmreAlps/comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/gittest"
+	"github.com/YunusEmreAlps/comi/internal/snapshot"
 )
 
 func TestHook(t *testing.T) {

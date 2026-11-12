@@ -1,6 +1,8 @@
 package config
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -33,7 +35,7 @@ func TestConfigAndStateRoundTrip(t *testing.T) {
 		t.Errorf("loaded project = %+v", p)
 	}
 
-	state := State{"/code/blog": added.Add(time.Hour)}
+	state := State{"/code/blog": {LastScheduled: added.Add(time.Hour)}}
 	if err := state.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +43,7 @@ func TestConfigAndStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loadedState["/code/blog"].Equal(added.Add(time.Hour)) {
+	if !loadedState["/code/blog"].LastScheduled.Equal(added.Add(time.Hour)) {
 		t.Errorf("loaded state = %v", loadedState)
 	}
 }
@@ -54,12 +56,45 @@ func TestStateLastRun(t *testing.T) {
 		t.Errorf("never ran: got %s, want Added", got)
 	}
 	ran := added.Add(time.Hour)
-	if got := (State{p.Path: ran}).LastRun(p); !got.Equal(ran) {
+	if got := (State{p.Path: {LastScheduled: ran}}).LastRun(p); !got.Equal(ran) {
 		t.Errorf("ran after add: got %s, want %s", got, ran)
 	}
 	// Re-adding a project resets Added, which must win over an older run.
-	if got := (State{p.Path: added.Add(-time.Hour)}).LastRun(p); !got.Equal(added) {
+	if got := (State{p.Path: {LastScheduled: added.Add(-time.Hour)}}).LastRun(p); !got.Equal(added) {
 		t.Errorf("re-added: got %s, want Added", got)
+	}
+}
+
+func TestRecordRunsReadsLegacyStateAndKeepsNewerResults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("COMI_HOME", dir)
+	const project = "/code/blog"
+	if err := os.WriteFile(filepath.Join(dir, stateFile), []byte(`{"/code/blog":"2026-01-15T10:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	if r := state[project]; !r.LastScheduled.Equal(old) || !r.LastAttempt.Equal(old) || !r.LastSuccess.IsZero() {
+		t.Fatalf("legacy state decoded as %+v", r)
+	}
+	ctx := context.Background()
+	if err := RecordRuns(ctx, []RunUpdate{
+		{Path: project, At: old.Add(2 * time.Minute), Error: "push failed"},
+		{Path: project, At: old.Add(time.Minute), Scheduled: true, Successful: true, Result: "saved"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err = LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := state[project]
+	if !r.LastScheduled.Equal(old.Add(time.Minute)) || !r.LastSuccess.Equal(r.LastScheduled) ||
+		!r.LastAttempt.Equal(old.Add(2*time.Minute)) || !r.LastFailure.Equal(r.LastAttempt) || r.Error != "push failed" || r.Result != "" {
+		t.Errorf("unexpected merged state: %+v", r)
 	}
 }
 
@@ -70,18 +105,18 @@ func TestConfigFind(t *testing.T) {
 		{Name: "api", Path: filepath.Join(dir, "api")},
 	}}
 
-	tests := map[string]int{
-		"blog":                    0,
-		"api":                     1,
-		filepath.Join(dir, "api"): 1,
-		"missing":                 -1,
+	for name, want := range map[string]int{"blog": 0, "api": 1, "missing": -1} {
+		if got := cfg.FindName(name); got != want {
+			t.Errorf("FindName(%q) = %d, want %d", name, got, want)
+		}
 	}
+	tests := map[string]int{filepath.Join(dir, "api"): 1, filepath.Join(dir, "missing"): -1}
 	if runtime.GOOS == "windows" {
 		tests[strings.ToUpper(filepath.Join(dir, "api"))] = 1
 	}
 	for key, want := range tests {
-		if got := cfg.Find(key); got != want {
-			t.Errorf("Find(%q) = %d, want %d", key, got, want)
+		if got := cfg.FindPath(key); got != want {
+			t.Errorf("FindPath(%q) = %d, want %d", key, got, want)
 		}
 	}
 }

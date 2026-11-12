@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/git"
 )
 
 // indexName is comi's own index, kept in the git directory between
@@ -22,6 +23,7 @@ const indexName = "comi-index"
 // (the scheduler and a manual snapshot) never share one.
 type index struct {
 	gitDir, path string
+	objectEnv    []string
 	kept         bool
 }
 
@@ -63,7 +65,90 @@ func openIndex(gitDir string) (*index, error) {
 	return idx, nil
 }
 
-func (idx *index) env() []string { return []string{"GIT_INDEX_FILE=" + idx.path} }
+func (idx *index) env() []string {
+	return append([]string{"GIT_INDEX_FILE=" + idx.path}, idx.objectEnv...)
+}
+
+func captureTree(ctx context.Context, root, gitDir string) (*index, string, []string, error) {
+	idx, err := openIndex(gitDir)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	tree, leftOut, err := idx.writeTree(ctx, root)
+	if err != nil {
+		idx.close()
+		return nil, "", nil, err
+	}
+	return idx, tree, leftOut, nil
+}
+
+// WorkingTree writes a tree using the same file selection as a snapshot.
+func WorkingTree(ctx context.Context, root string) (string, error) {
+	gitDir, err := git.Dir(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	idx, tree, _, err := captureTree(ctx, root, gitDir)
+	if err == nil {
+		idx.close()
+	}
+	return tree, err
+}
+
+// checkRestore rejects overwrites of files that the backup does not contain.
+func (idx *index) checkRestore(ctx context.Context, root, backupTree, source string, paths []string) error {
+	args := append([]string{"diff", "--no-renames", "--ignore-submodules=none", "--diff-filter=A", "--name-only", "-z", backupTree, source, "--"}, paths...)
+	added, err := git.RunZ(ctx, root, idx.env(), args...)
+	if err != nil || len(added) == 0 {
+		return err
+	}
+	outside, err := git.RunZ(ctx, root, idx.env(), "ls-files", "--others", "-z")
+	if err != nil || len(outside) == 0 {
+		return err
+	}
+	ignoreCase, err := ignoreCasePaths(ctx, root)
+	if err != nil {
+		return err
+	}
+	if conflicts := restoreCollisions(added, outside, ignoreCase); len(conflicts) > 0 {
+		return fmt.Errorf("restore would overwrite %q, which is missing from the backup. Move it before restoring", conflicts[0])
+	}
+	return nil
+}
+
+func ignoreCasePaths(ctx context.Context, root string) (bool, error) {
+	value, err := git.Run(ctx, root, "config", "--type=bool", "--default=false", "--get", "core.ignoreCase")
+	return value == "true", err
+}
+
+func restoreCollisions(added, existing []string, ignoreCase bool) []string {
+	key := func(p string) string { return p }
+	if ignoreCase {
+		key = strings.ToLower
+	}
+	targets, parents := map[string]bool{}, map[string]bool{}
+	for _, p := range added {
+		targets[key(p)] = true
+		for dir := path.Dir(p); dir != "."; dir = path.Dir(dir) {
+			parents[key(dir)] = true
+		}
+	}
+	var collisions []string
+	for _, p := range existing {
+		p = strings.TrimSuffix(p, "/") // an embedded repository may end in a slash
+		if parents[key(p)] {
+			collisions = append(collisions, p)
+			continue
+		}
+		for parent := p; parent != "."; parent = path.Dir(parent) {
+			if targets[key(parent)] {
+				collisions = append(collisions, p)
+				break
+			}
+		}
+	}
+	return collisions
+}
 
 // writeTree stores the working tree, as `git add -A` would see it, and
 // returns its tree id, along with the files left out for being too large
@@ -71,6 +156,9 @@ func (idx *index) env() []string { return []string{"GIT_INDEX_FILE=" + idx.path}
 // index last saw them, and only those are added: on Windows, status looks
 // through a large tree about three times faster than git add does.
 func (idx *index) writeTree(ctx context.Context, root string) (string, []string, error) {
+	if err := idx.syncIgnored(ctx, root); err != nil {
+		return "", nil, err
+	}
 	entries, err := git.RunZ(ctx, root, idx.env(), "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames")
 	if err != nil {
 		return "", nil, fmt.Errorf("status: %w", err)
@@ -180,9 +268,8 @@ func tooLarge(ctx context.Context, root string, paths []string) ([]string, error
 // `git add -A` never adds an ignored file and never drops one that is
 // already in the index, so without this a file ignored after it was first
 // saved would stay in every snapshot, and an ignored file the user tracks
-// anyway (git add -f) would be left out. It reports whether it changed
-// anything.
-func (idx *index) syncIgnored(ctx context.Context, root string) (bool, error) {
+// anyway (git add -f) would be left out.
+func (idx *index) syncIgnored(ctx context.Context, root string) error {
 	type result struct {
 		paths map[string]bool
 		err   error
@@ -202,10 +289,10 @@ func (idx *index) syncIgnored(ctx context.Context, root string) (bool, error) {
 	oursCh, theirsCh := ignored(idx.env()), ignored(nil)
 	ours, theirs := <-oursCh, <-theirsCh
 	if ours.err != nil {
-		return false, ours.err
+		return ours.err
 	}
 	if theirs.err != nil {
-		return false, theirs.err
+		return theirs.err
 	}
 
 	var drop, add []string
@@ -232,10 +319,10 @@ func (idx *index) syncIgnored(ctx context.Context, root string) (bool, error) {
 		}
 		input := strings.Join(op.paths, "\x00") + "\x00"
 		if _, err := git.RunInput(ctx, root, idx.env(), input, "update-index", "-z", op.flag, "--stdin"); err != nil {
-			return false, fmt.Errorf("update-index: %w", err)
+			return fmt.Errorf("update-index: %w", err)
 		}
 	}
-	return len(drop)+len(add) > 0, nil
+	return nil
 }
 
 // keep makes this copy comi's index for the next run. If another run has

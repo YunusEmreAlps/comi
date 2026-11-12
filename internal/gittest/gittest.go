@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"comi/internal/git"
+	"github.com/YunusEmreAlps/comi/internal/git"
 )
 
 // NewRepo creates a repository on branch main with one commit, pushed to a

@@ -1,158 +1,159 @@
 <p align="center">
-  <img src="assets/comi.svg" alt="comi, a Go gopher dressed as a komi, serving commits on a tray" width="260">
+  <img src="assets/comi.svg" alt="The comi mascot serving Git commits on a tray" width="140">
 </p>
 
 <h1 align="center">comi</h1>
 
+<p align="center"><strong>Scheduled Git snapshots and automatic commits.</strong></p>
+
 <p align="center">
-  <img alt="Go 1.23+" src="https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go&logoColor=white">
-  <img alt="Windows, macOS, Linux" src="https://img.shields.io/badge/platform-windows%20%7C%20macos%20%7C%20linux-lightgrey">
-  <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none%20but%20git-brightgreen">
+  Back up uncommitted work, preview a restore, and schedule backups across repositories.
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#restore-files">Restore</a> ·
+  <a href="#project-namespaces">Namespaces</a> ·
+  <a href="#command-reference">Commands</a>
+</p>
+
+<p align="center">
+  <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-475569">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
----
-
-Your repositories' komi: it picks up your changes and serves them as commits, on your schedule. Automatic commits, or hidden snapshots of your uncommitted work, for any number of projects, each with its own timing.
-
-```text
-$ comi list
-NAME   MODE      SCHEDULE     NEXT RUN              BRANCH  PUSH  KEEP       MESSAGE              PATH
-app    snapshot  5m           Tue 2026-10-13 21:25  (any)   yes   1d,7d,30d  -                    /home/you/code/app
-blog   commit    30m          Tue 2026-10-13 21:44  (any)   yes   -          auto: {date} {time}  /home/you/code/blog
-notes  commit    09:00,18:00  Wed 2026-10-14 09:00  main    no    -          daily: {date}        /home/you/code/notes
-```
-
-## Features
-
-- **Two modes per project**
-  - **commit**: real commits on your branch, pushed for you. Good for notes, docs and dotfiles.
-  - **snapshot**: a safety net for code. Uncommitted work is saved to hidden refs every few minutes; your branch, history and staging area are never touched.
-- **Get lost work back.** After a `git reset --hard`, a `git clean`, a bad merge or an AI agent "cleaning up", `comi restore 10m` brings the files back.
-- **Guards AI coding agents.** A [Claude Code hook](#with-ai-coding-agents) snapshots your work right before every shell command the agent runs.
-- **A schedule per project**: every `30m` or `2h`, or daily at `20:00` / `09:00,18:00`.
-- **One background process** for all your repositories. Add or remove projects while it runs.
-- **Off-machine backup.** Snapshots are pushed to `origin` as hidden refs, not branches. A failed push (offline, auth) stays local and is retried on the next run.
-- **Snapshots don't pile up.** Old ones are thinned out automatically.
-- **Safe by default.** Commit mode skips runs during a rebase, merge, cherry-pick or revert and in detached HEAD, and comi never switches branches. `-b main` limits a project to one branch.
-- **Single binary** for Windows, macOS and Linux, tested on all three. The only requirement is `git`.
-
 ## Quick start
 
-1. **Install.** Download the archive for your system from [Releases](https://github.com/YunusEmreAlps/comi/releases/latest), extract it and put `comi` (`comi.exe` on Windows) on your `PATH`. Or build it with Go 1.23+:
+After [installing comi](#install), run these commands in a Git repository with uncommitted changes.
 
-   ```sh
-   git clone https://github.com/YunusEmreAlps/comi.git && cd comi
-   go install ./cmd/comi    # installs to $(go env GOPATH)/bin, make sure it's on your PATH
-   ```
-
-2. **Add your projects.** Without `-s`, comi asks for the schedule and suggests the default. Run `comi add` with no arguments to set everything up step by step.
-
-   ```sh
-   comi add ~/code/app -mode snapshot    # snapshot every 5 minutes
-   comi add ~/code/blog -s 30m           # commit every 30 minutes
-   ```
-
-3. **Start the scheduler** and leave it running, or [start it at login](#run-in-the-background):
-
-   ```sh
-   comi run
-   ```
-
-   ```text
-   2026/10/13 21:20:00 comi 0.2.0 started (data: /home/you/.config/comi), press Ctrl+C to stop
-   2026/10/13 21:25:00 app: snapshot 2bb2416c (2 files changed), pushed
-   2026/10/13 21:30:00 app: no changes
-   2026/10/13 21:44:00 blog: committed and pushed
-   ```
-
-> [!WARNING]
->
-> - **Check your `.gitignore`.** Both modes save *everything* that isn't ignored, untracked files included, and push it to `origin` unless you pass `-no-push`. Make sure `.env` files, keys and build output are ignored.
-> - **Set up authentication** (an SSH key or a credential helper) so `git push` works without a password. comi can't answer prompts.
-> - **Think twice on shared branches.** Pushing automatically to a branch others use, or one that triggers CI/CD, can surprise your team. A personal branch with `-b`, or `-no-push`, keeps it to yourself.
-
-## Commit mode
-
-On each run:
-
-1. **Safety check.** The run is skipped if the repository is in detached HEAD, a rebase, merge, cherry-pick or revert is in progress, or a branch lock (`-b`) is set and another branch is checked out. A skipped run counts as done; the next one follows the schedule.
-2. **Commit.** If anything changed, `git add -A` and `git commit` with your message.
-3. **Push**, unless `-no-push` is set: to the branch's upstream, or with `-u origin HEAD` the first time. Commits left over from a failed push are pushed too, even when nothing new changed.
-
-Every git command has a 2-minute timeout and never waits for a password prompt.
-
-### Commit messages
-
-`-m` sets a message template. The default is `auto: {date} {time}`.
-
-| Placeholder | Becomes | Example |
-| --- | --- | --- |
-| `{date}` | date of the run | `2026-10-13` |
-| `{time}` | time of the run | `20:00` |
-| `{files}` | number of changed files | `3` |
-
-`-m "wip: {files} files at {time}"` → `wip: 3 files at 20:00`
-
-## Snapshot mode
-
-Snapshot mode protects work you haven't committed yet. Every few minutes comi saves your files, including new untracked ones, as a hidden commit. Your branch, history and staging area stay exactly as they are.
-
-```text
-$ git reset --hard && git clean -fd          # oops: an hour of work is gone
-
-$ comi history
-SNAPSHOT  TIME                  AGE      FILES CHANGED
-2bb2416c  Tue 2026-10-13 21:22  3m ago   2
-
-$ comi diff latest -stat                     # what would come back?
- notes.txt   | 1 -
- src/main.go | 2 +-
-
-$ comi restore latest                        # everything back
-restored all files from snapshot 2bb2416c (Tue 2026-10-13 21:22)
+```sh
+comi snapshot -push=false
+comi history
 ```
 
-- **Pick a snapshot** by id (`2bb2416c`), by age (`30m`, `2h`, `3d`: the newest snapshot at least that old) or with `latest`.
-- **Restore everything** with `comi restore 2h`, or **single files** with `comi restore 2h src/main.go`.
-- **Restoring is undoable.** If you have uncommitted changes, they are snapshotted before anything is overwritten, and comi prints the id to go back to. Restore only writes files; the staging area and HEAD stay as they are.
-- **Works in any state**: detached HEAD, mid-rebase, a conflicted merge. That's often exactly when you need it.
-- **Works in any git repository.** `snapshot`, `history`, `diff`, `restore` and `prune` don't need the project to be added; only scheduled snapshots do.
-- **One history per branch.** Commands use the current branch's snapshots; `-b <branch>` picks another one.
-- **Large files stay out.** Files over 50 MB that git doesn't track are left out, and comi names them: reading them on every change is slow, and GitHub refuses files over 100 MB, which would make every later push fail. Files you track are always saved.
+Edit one of the saved files again and preview the restore.
 
-### Keeping old snapshots
+```text
+$ comi restore latest -n
+Restore preview for snapshot d62ea2a2
+  write  "notes.txt"
+```
 
-Old snapshots are thinned out as new ones are taken, about once a day. The default policy, `24h,7d,30d`, keeps:
+| Mode | What it saves | When to use it |
+| --- | --- | --- |
+| **Snapshot** | Uncommitted files in a separate Git ref. The current branch and staging area stay intact. | Code in progress, experiments, and work before running an agent |
+| **Commit** | A regular commit on the checked-out branch. | Notes, docs, and other repositories where you want automatic commits |
 
-| Age | Kept |
-| --- | --- |
-| up to 24 hours | every snapshot |
-| up to 7 days | the newest of each hour |
-| up to 30 days | the newest of each day |
-| older | nothing (the newest snapshot is always kept) |
+## Install
 
-Set another policy per project with `-keep`, for example `comi add . -mode snapshot -keep 2h,3d,14d`, or keep everything with `-keep forever`. `comi prune` cleans up right away; `comi prune -n` only shows what would go.
+Comi runs on **Windows, macOS, and Linux** with `git` on your `PATH`. Release builds target amd64 and arm64.
 
-> [!NOTE]
-> Snapshots are chained, so removing some gives the newer ones new ids (their files and times stay the same). To pick an older snapshot, use an age (`2h`, `3d`) or `latest` rather than an id.
+Build from source with Go 1.23 or newer.
 
-<details>
-<summary>How it works</summary>
+```sh
+git clone https://github.com/YunusEmreAlps/comi.git
+cd comi
+go install ./cmd/comi
+```
 
-- Snapshots of branch `main` live under `refs/comi/main` (`refs/comi/detached` in detached HEAD). Refs outside `refs/heads` are not branches, so they don't show up in `git branch` or as branches on GitHub.
-- A snapshot is built on comi's own index, `.git/comi-index`, which starts as a copy of yours, so your real index is never modified. It remembers what the last snapshot saw, so only files that changed since are read again. Files in `.gitignore` are left out, as `git add -A` would.
-- `.git/comi-pruned` holds when comi last looked for old snapshots to remove. It looks at most once an hour.
-- Each snapshot's first parent is the previous snapshot and its second parent is the commit you were on, so `git log --first-parent refs/comi/main` shows them all.
-- A new snapshot is only made when something changed since the last one and the files differ from your last commit.
-- Pruning rebuilds the chain from the oldest kept snapshot with the same trees, times and parents, in one `git fast-import`, then moves the ref only if no snapshot was taken meanwhile. Disk space is freed when git's garbage collection removes the unreferenced objects.
-- With push enabled, the ref is pushed to `origin` as `refs/comi/<branch>`. `refs/comi-pushed/<branch>` remembers what was sent, so failed pushes are retried without contacting the remote.
+For a pinned install, replace `vX.Y.Z` with a release tag that uses the `github.com/YunusEmreAlps/comi` module path.
 
-</details>
+```sh
+go install github.com/YunusEmreAlps/comi/cmd/comi@vX.Y.Z
+```
 
-### With AI coding agents
+Go puts the binary in `GOBIN` or in the `bin` directory under `GOPATH`. Add that directory to your `PATH` and run `comi version`.
 
-Claude Code can rewind the edits it makes to files, but not what its shell commands do: an `rm`, a `git checkout .` or a `git reset --hard` is out of its reach. `comi hook` takes a snapshot right before each shell command. Add it to `~/.claude/settings.json` for all your projects, or to a project's `.claude/settings.json`:
+When a binary release is available, you can download the matching archive, extract it, and put `comi` or `comi.exe` on your `PATH`. [GitHub Releases](https://github.com/YunusEmreAlps/comi/releases)
+
+## Schedule projects
+
+Register the current repository for local snapshots every five minutes. `comi now .` runs that project immediately.
+
+```sh
+comi add . -mode snapshot -s 5m -no-push
+comi now .
+comi run
+```
+
+One scheduler handles all registered projects and checks for due work every 30 seconds. In another terminal, `comi status` shows the scheduler, last successful run, most recent error, and pending pushes based on local Git refs. Use `comi status .` to check the current project. To run the scheduler at login, see [background setup](#run-in-the-background).
+
+Use `comi add` with no arguments for guided setup. To change one setting, run `comi add . -s 15m`. Other settings are retained.
+
+| Schedule | Example | When it runs |
+| --- | --- | --- |
+| Interval | `30m` or `1h30m` | Every interval, with a one-minute minimum |
+| Daily | `09:00,18:00` | At each listed time in your local time zone |
+
+A missed schedule runs once when the scheduler resumes. Manual runs via `comi now` leave the scheduled run time intact.
+
+### Automatic commits
+
+In a repository where you want commits on the current branch, run `comi add . -mode commit -s 30m -no-push`. Commit mode stages changes with `git add -A`. It skips detached HEAD and repositories in a merge, rebase, cherry-pick, or revert. Use `-b main` to limit runs to one branch.
+
+The default commit message is `auto: {date} {time}`. Set `-m "wip: {files} files at {time}"` to use a different template.
+
+## Project namespaces
+
+Save a root directory once and use targets like `work/api` from any working directory.
+
+```powershell
+comi projects add work "D:\GitHub\Work"
+comi projects list
+comi add work/api -mode snapshot -s 5m -no-push
+comi status work/api
+comi history -p work/api
+```
+
+`comi projects add` maps the root. `comi add work/api` schedules the repository. Commands such as `history` and `restore` can use the shorthand without scheduling it. Use `/` in namespace targets on every platform.
+
+Project names and absolute paths work alongside namespace targets. An exact registered name takes precedence in commands that accept project names. Use `./work/api` or `.\work\api` to select a path relative to the current directory. Updating a namespace root changes the shorthand and keeps the saved paths of scheduled projects.
+
+## Restore files
+
+Select a snapshot by `latest`, an ID prefix, or an age such as `2h`. An age selects the newest snapshot at least that old. History follows the current branch by default. Pass `-b <branch>` to read another branch's snapshots.
+
+```sh
+comi history
+comi diff latest -stat
+comi restore latest -n
+```
+
+After reviewing the preview, run `comi restore latest` for the whole snapshot or `comi restore latest src/main.go` for a single file. Use `-p work/api` to target another repository. With `-p`, relative file paths start at that repository's root. Otherwise they start in your current directory.
+
+Restore saves a backup when the current files differ from both `HEAD` and the latest snapshot. It prints the new backup ID and stops if the restore would overwrite a file that the backup excludes. You can take snapshots in detached HEAD or during a conflicted merge or rebase. Both snapshot and restore preserve `HEAD` and the staging area.
+
+### Snapshot retention
+
+Snapshots include tracked files and unignored untracked files up to 50 MiB. The default policy `24h,7d,30d` keeps every snapshot for 24 hours, the newest per hour through day 7, and the newest per day through day 30. The latest snapshot is always kept.
+
+Use `-keep 2h,3d,14d` for custom cutoffs or `-keep forever` to retain every snapshot. Run `comi prune -n` to preview cleanup and `comi prune` to apply it. Pruning can change snapshot IDs, so age selectors are useful for older snapshots.
+
+## Remote backups
+
+Scheduled projects push by default. The examples above use `-no-push` for local backups. Snapshot mode sends `refs/comi/<branch>` to `origin`. Commit mode pushes to the branch's upstream or tries `origin` on its first push.
+
+> [!IMPORTANT]
+> Both modes can save untracked files. Check your `.gitignore` for secrets and build output before enabling push, and review anything you have already staged or tracked. Set up an SSH key or credential helper so Git can authenticate without prompting.
+
+To enable push for a registered snapshot project, run `comi add . -no-push=false` from its repository. Failed snapshot pushes stay local and are retried on subsequent runs. If another clone pushes a divergent snapshot history to the same ref, comi rejects the update and keeps the local backup.
+
+### Recover snapshots in a fresh clone
+
+Use `git ls-remote --refs origin 'refs/comi/*'` to find snapshot refs. In the fresh clone, fetch the branch you backed up. Replace `main` if needed.
+
+```sh
+git fetch --no-tags origin refs/comi/main:refs/comi/main
+comi history -b main
+comi restore latest -b main -n
+```
+
+Run `comi restore latest -b main` when you are ready to apply the restore.
+
+## Claude Code hook
+
+`comi hook` takes a local snapshot before Claude Code runs a Bash or PowerShell tool call. Add this hook to `.claude/settings.json` in a project or `~/.claude/settings.json` for all projects. Merge it into the existing settings if the file already exists. [Claude Code hook reference](https://code.claude.com/docs/en/hooks)
 
 ```json
 {
@@ -167,69 +168,51 @@ Claude Code can rewind the edits it makes to files, but not what its shell comma
 }
 ```
 
-- It snapshots whichever repository the agent is working in, added to comi or not. Outside a git repository it does nothing.
-- It never stops a command. If a snapshot can't be taken, the command runs anyway, and the reason goes to Claude Code's debug log.
-- Snapshots stay local. For projects added with `-mode snapshot`, `comi run` pushes them on its next run.
-- When nothing changed since the last snapshot, it only checks: a few git commands, a fraction of a second.
-- To undo what a command did, use `comi history` and `comi restore` as usual.
+The hook uses the agent's current Git repository and lets the tool call continue if a snapshot fails. For a scheduled snapshot project with push enabled, the scheduler can send those snapshots to `origin`.
 
-## Schedules
+## Command reference
 
-| Schedule | Runs |
+| Command | Use |
 | --- | --- |
-| `30m`, `2h`, `1h30m` | every interval (minimum `1m`) |
-| `20:00` | every day at 20:00 |
-| `09:00,13:00,18:00` | every day at each of these times |
-
-Times use your computer's local time zone. If comi wasn't running when a run was due (computer off or asleep), that run happens **once** as soon as comi starts again; missed runs are not repeated one by one.
-
-## Commands
-
-| Command | What it does |
-| --- | --- |
-| `comi add [path] [flags]` | Add a project, or update it if it's already added. Without a path, it asks step by step. |
-| `comi list` (`ls`) | Show projects, their schedule and next run. |
-| `comi now [name ...]` | Run right now: the given projects, or all of them. |
-| `comi remove <name\|path> ...` (`rm`) | Stop managing a project. Your repository is not touched. |
-| `comi run` | Start the scheduler. It checks every 30 seconds which projects are due. Only one can run at a time. |
-| `comi snapshot [-p project] [-push]` | Take a snapshot now. |
+| `comi add [path] [flags]` | Register or update a scheduled project. |
+| `comi list` or `comi ls` | List scheduled projects and their settings. |
+| `comi status [project]` | Show the scheduler, recent runs, and push status. |
+| `comi now [project ...]` | Run the selected projects immediately, or all projects without arguments. |
+| `comi remove <project> ...` or `comi rm` | Remove scheduling for a project. |
+| `comi run` | Start the scheduler in the foreground. |
+| `comi projects add <namespace> <directory>` | Set a namespace root. |
+| `comi projects list` | List namespace roots. |
+| `comi snapshot [-p project] [-push]` | Save a snapshot now. |
 | `comi history [-p project] [-b branch] [-n 20]` | List snapshots. |
-| `comi diff <snapshot> [-p project] [-b branch] [-stat]` | Show what changed between a snapshot and your files now. |
-| `comi restore <snapshot> [-p project] [-b branch] [file ...]` | Put files back from a snapshot (all files if none given). |
-| `comi prune [-p project] [-keep policy] [-n]` | Remove old snapshots now, on every branch. `-n` only lists them. |
-| `comi hook` | Take a snapshot for a Claude Code hook, see [With AI coding agents](#with-ai-coding-agents). |
-| `comi version` | Show the installed version. |
-| `comi help` | Show usage. |
+| `comi diff <snapshot> [-p project] [-b branch] [-stat]` | Compare the snapshot with the working files. |
+| `comi restore <snapshot> [-p project] [-b branch] [-n] [file ...]` | Restore files or preview with `-n`. |
+| `comi prune [-p project] [-keep policy] [-n]` | Apply or preview snapshot retention for all branches. |
+| `comi hook` | Save a local snapshot for a Claude Code tool call. |
+| `comi help` · `comi version` | Show usage or the installed version. |
 
-`-p` takes a project name or path and defaults to the current directory.
+<details>
+<summary><strong>Project flags</strong></summary>
 
-### `comi add` flags
-
-| Flag | Default | Description |
+| `comi add` flag | Default | Use |
 | --- | --- | --- |
-| `-mode <mode>` | `commit` | `commit` or `snapshot`, see [Snapshot mode](#snapshot-mode). |
-| `-s <schedule>` | `1h` (`5m` for snapshots) | When to run, see [Schedules](#schedules). |
-| `-m <message>` | `auto: {date} {time}` | Commit message template, see [Commit messages](#commit-messages). |
-| `-b <branch>` | *(any branch)* | Only run while this branch is checked out. `-b ""` removes the lock. |
-| `-n <name>` | folder name | Name used in `list`, `now`, `remove` and `-p`. |
-| `-keep <policy>` | `24h,7d,30d` | Which old snapshots to keep, see [Keeping old snapshots](#keeping-old-snapshots). |
-| `-no-push` | off | Keep commits or snapshots local. |
+| `-mode commit\|snapshot` | `commit` | Select automatic commits or snapshots. |
+| `-s <schedule>` | `1h` for commits, `5m` for snapshots | Set the interval or daily times. |
+| `-m <message>` | `auto: {date} {time}` | Set a template with `{date}`, `{time}`, or `{files}`. |
+| `-b <branch>` | Any branch | Restrict runs to a branch. `-b ""` clears the restriction. |
+| `-n <name>` | Folder name | Set a short project name. |
+| `-keep <policy>` | `24h,7d,30d` | Set snapshot retention. |
+| `-no-push` | Push enabled | Keep scheduled runs local. |
 
-Flags can go before or after the path. Running `comi add` again on the same project updates it and keeps every setting you don't pass:
-
-```sh
-comi add ~/code/api -s 20:00 -m "daily: {date}" -b main
-comi add ~/code/api -s 18:00        # only the schedule changes
-```
+</details>
 
 ## Run in the background
 
-`comi run` has to keep running for scheduled runs. To start it when you log in:
+Keep `comi run` active for scheduled runs. Choose your platform to start it at login.
 
 <details>
-<summary><b>Windows</b>: Startup folder shortcut</summary>
+<summary><strong>Windows</strong> · Startup shortcut</summary>
 
-Run in PowerShell. It starts comi minimized at every login; no admin rights needed.
+Run this in PowerShell to start comi minimized at login.
 
 ```powershell
 $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\comi.lnk")
@@ -244,9 +227,9 @@ To stop it, close the comi window. To remove it, delete `comi.lnk` from the Star
 </details>
 
 <details>
-<summary><b>macOS</b>: launchd</summary>
+<summary><strong>macOS</strong> · launchd</summary>
 
-Save as `~/Library/LaunchAgents/comi.plist`, replacing `/Users/YOU/go/bin/comi` with the output of `which comi`:
+Save the configuration as `~/Library/LaunchAgents/comi.plist` and replace `/Users/YOU/go/bin/comi` with the output of `command -v comi`.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -276,9 +259,9 @@ launchctl unload ~/Library/LaunchAgents/comi.plist   # stop
 </details>
 
 <details>
-<summary><b>Linux</b>: systemd user service</summary>
+<summary><strong>Linux</strong> · systemd user service</summary>
 
-Save as `~/.config/systemd/user/comi.service`, adjusting the path if `which comi` shows another location:
+Save the configuration as `~/.config/systemd/user/comi.service` and adjust the path to match `command -v comi`.
 
 ```ini
 [Unit]
@@ -300,55 +283,36 @@ loginctl enable-linger "$USER"       # optional: keep running after you log out
 
 </details>
 
-## Where settings are stored
+## Configuration
 
-| OS | Directory |
+Set `COMI_HOME` to override the data directory.
+
+| Platform | Default |
 | --- | --- |
 | Windows | `%AppData%\comi` |
 | macOS | `~/Library/Application Support/comi` |
 | Linux | `$XDG_CONFIG_HOME/comi` or `~/.config/comi` |
 
-`projects.json` holds your projects, `state.json` remembers when each one last ran, and `comi.lock` exists while `comi run` is running. Set `COMI_HOME` to use another directory, for example to keep separate setups.
+`projects.json` stores scheduled projects, `namespaces.json` stores namespace roots, and `state.json` records run history. The scheduler holds an OS lock on `comi.lock` while running.
+
+<details>
+<summary><strong>How snapshots are stored</strong></summary>
+
+Snapshots use a separate Git index in the repository's Git directory. Comi records each branch under `refs/comi/<branch>` and uses `refs/comi/detached` in detached HEAD. Walk a branch's snapshot history with `git log --first-parent refs/comi/main`.
+
+Comi skips a new snapshot if its tree matches `HEAD` or the last snapshot. Automatic pruning checks at most once per hour and can rewrite the chain. Git garbage collection eventually removes unreachable objects.
+
+</details>
 
 ## Development
 
-```text
-cmd/comi/             the CLI: commands, flags, scheduler loop
-internal/autocommit/  commit mode: commit, push, retry, safety checks
-internal/snapshot/    snapshot mode: take, list, find, restore, prune, push
-internal/schedule/    parsing "30m" / "20:00" and computing the next run
-internal/config/      projects.json and state.json
-internal/lock/        one scheduler per data directory
-internal/git/         running git commands
-internal/gittest/     throwaway repositories for tests
-```
-
 ```sh
 go vet ./...
-go test ./...    # unit tests plus integration tests against real temporary git repositories
+go test ./...
 ```
 
-[CI](.github/workflows/ci.yml) checks formatting and runs vet and the tests on Windows, macOS and Linux, with the race detector on Linux.
-
-To release, push a version tag. [GoReleaser](https://goreleaser.com) builds the binaries (amd64 and arm64 for every platform) and publishes them on the Releases page:
-
-```sh
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-## Why "comi"?
-
-In Turkish, a **komi** is the helper in restaurants, hotels and cafés who works in the service or kitchen area and assists the cooks and waiters:
-
-> **komi**: Lokanta, otel ve kafe gibi yiyecek-içecek hizmeti veren yerlerde aşçılara veya garsonlara yardımcı olan, işletmenin servis veya mutfak bölümlerinde çalışan görevli.
-
-comi is your repositories' komi. It works quietly in the background, collects your changes and serves them as commits at the time you set, and, like any good komi, picks up what falls on the floor before anyone notices. It's also only one letter away from *commit*.
-
-## Credits
-
-The comi mascot is based on the Go gopher, designed by [Renée French](https://reneefrench.blogspot.com/) and licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The [CI workflow](.github/workflows/ci.yml) runs on Windows, macOS, and Linux. Linux also checks formatting and runs the race detector. The [release workflow](.github/workflows/release.yml) publishes builds for version tags using [GoReleaser](.goreleaser.yaml).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The name comes from Turkish *komi*, a restaurant assistant. The mascot is based on the Go gopher by [Renée French](https://reneefrench.blogspot.com/), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
